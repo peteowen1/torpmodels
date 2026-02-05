@@ -1,11 +1,25 @@
 Package: torpmodels
-Title: What the Package Does (One Line, Title Case)
-Version: 0.0.0.9000
-Authors@R: 
-    person("First", "Last", , "first.last@example.com", role = c("aut", "cre"),
-           comment = c(ORCID = "YOUR-ORCID-ID"))
-Description: What the package does (one paragraph).
+Title: Pre-trained Models for AFL Analytics
+Version: 0.0.0.9001
+Authors@R:
+    person("Pete", "Owen", , "pete.owen@example.com", role = c("aut", "cre"))
+Description: Provides pre-trained machine learning models for Australian Football
+    League (AFL) analytics. Includes Expected Points (EP) models, Win Probability (WP)
+    models, shot outcome classification models, and per-statistic GAM models. Models
+    are served via GitHub releases for on-demand download and local caching.
 License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
-RoxygenNote: 7.2.1
+RoxygenNote: 7.3.3
+Imports:
+    cli (>= 3.0.0),
+    piggyback (>= 0.1.4)
+Suggests:
+    mgcv (>= 1.8.0),
+    xgboost (>= 1.6.0),
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3
+Depends:
+    R (>= 3.5)
+URL: https://github.com/peteowen1/torpmodels
+BugReports: https://github.com/peteowen1/torpmodels/issues

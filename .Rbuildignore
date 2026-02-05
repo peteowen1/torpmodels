@@ -1,1 +1,5 @@
 ^LICENSE\.md$
+^data-raw$
+^\.Rproj\.user$
+^CLAUDE\.md$
+^.*\.Rproj$
