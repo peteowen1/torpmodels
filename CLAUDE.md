@@ -70,6 +70,13 @@ source("data-raw/01-ep-model/train_ep_model.R")
 piggyback::pb_upload("ep_model.rds", repo = "peteowen1/torpmodels", tag = "core-models")
 ```
 
+## Debug Scripts
+
+When running ad-hoc R scripts for debugging or testing, write them to `data-raw/debug/` and execute via:
+```bash
+Rscript "data-raw/debug/script_name.R"
+```
+
 ## Dependencies
 
 - **piggyback** - GitHub releases for model distribution
