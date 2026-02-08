@@ -26,14 +26,13 @@ cli::cli_inform("Preparing EPV model data...")
 model_data_epv <- torp::clean_model_data_epv(pbp)
 
 # XGBoost parameters
-nrounds <- 87
 params <- list(
   booster = "gbtree",
   objective = "multi:softprob",
-  eval_metric = c("mlogloss"),
+  eval_metric = "mlogloss",
   tree_method = "hist",
   num_class = 5,
-  eta = 0.15,
+  eta = 0.1,
   gamma = 0,
   subsample = 0.85,
   colsample_bytree = 0.85,
@@ -42,20 +41,49 @@ params <- list(
 )
 
 # Create training matrix
-full_train <- xgboost::xgb.DMatrix(
-  stats::model.matrix(~ . + 0,
-    data = model_data_epv %>% torp::select_epv_model_vars()
-  ),
-  label = model_data_epv$label_ep
-)
+epv_vars <- model_data_epv %>% torp::select_epv_model_vars()
+X_train <- stats::model.matrix(~ . + 0, data = epv_vars)
+y_train <- model_data_epv$label_ep
 
-# Train the model
-cli::cli_inform("Training EP model...")
+full_train <- xgboost::xgb.DMatrix(data = X_train, label = y_train)
+
+# Create match-grouped CV folds to prevent data leakage
+cli::cli_inform("Creating match-grouped CV folds...")
+match_ids <- unique(model_data_epv$torp_match_id)
 set.seed(1234)
-ep_model <- xgboost::xgboost(
+match_folds <- sample(rep(1:5, length.out = length(match_ids)))
+names(match_folds) <- match_ids
+row_folds <- match_folds[model_data_epv$torp_match_id]
+folds <- lapply(1:5, function(k) which(row_folds == k))
+
+# Cross-validation to find optimal nrounds
+cli::cli_inform("Running 5-fold CV with match-grouped folds...")
+set.seed(1234)
+cv_result <- xgboost::xgb.cv(
   params = params,
   data = full_train,
-  nrounds = nrounds,
+  nrounds = 500,
+  folds = folds,
+  early_stopping_rounds = 20,
+  print_every_n = 20,
+  verbose = 1
+)
+
+# Get optimal nrounds
+optimal_nrounds <- cv_result$best_iteration
+if (is.null(optimal_nrounds) || length(optimal_nrounds) == 0) {
+  optimal_nrounds <- which.min(cv_result$evaluation_log$test_mlogloss_mean)
+}
+cli::cli_inform("Optimal nrounds: {optimal_nrounds}")
+cli::cli_inform("Best CV mlogloss: {min(cv_result$evaluation_log$test_mlogloss_mean)}")
+
+# Train final model
+cli::cli_inform("Training final EP model...")
+set.seed(1234)
+ep_model <- xgboost::xgb.train(
+  params = params,
+  data = full_train,
+  nrounds = optimal_nrounds,
   print_every_n = 10
 )
 

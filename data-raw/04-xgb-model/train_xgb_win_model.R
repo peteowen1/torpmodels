@@ -59,8 +59,18 @@ gr <- expand.grid(
   gamma = c(0, 1)
 )
 
-# Cross-validation for hyperparameter tuning
-cli::cli_inform("Running hyperparameter tuning...")
+# Create match-grouped CV folds to prevent data leakage
+# Each match has 2 rows (home/away), ensure both are in same fold
+cli::cli_inform("Creating match-grouped CV folds...")
+match_ids <- unique(train_df$providerId)
+set.seed(1234)
+match_folds <- sample(rep(1:5, length.out = length(match_ids)))
+names(match_folds) <- match_ids
+row_folds <- match_folds[train_df$providerId]
+folds <- lapply(1:5, function(k) which(row_folds == k))
+
+# Cross-validation for hyperparameter tuning with match-grouped folds
+cli::cli_inform("Running hyperparameter tuning with match-grouped folds...")
 cv_results <- purrr::pmap(gr, function(eta, max_depth, subsample,
                                        colsample_bytree, min_child_weight, gamma) {
   params <- list(
@@ -78,10 +88,15 @@ cv_results <- purrr::pmap(gr, function(eta, max_depth, subsample,
     params = params,
     data = dtrain,
     nrounds = 1000,
-    nfold = 5,
+    folds = folds,  # use match-grouped folds
     verbose = 0,
     early_stopping_rounds = 50
   )
+
+  best_iter <- cv$best_iteration
+  if (is.null(best_iter) || length(best_iter) == 0) {
+    best_iter <- which.min(cv$evaluation_log$test_logloss_mean)
+  }
 
   tibble(
     eta = eta,
@@ -91,7 +106,7 @@ cv_results <- purrr::pmap(gr, function(eta, max_depth, subsample,
     min_child_weight = min_child_weight,
     gamma = gamma,
     best_logloss = min(cv$evaluation_log$test_logloss_mean),
-    best_nrounds = cv$best_iteration
+    best_nrounds = best_iter
   )
 }, .progress = TRUE) %>%
   bind_rows()

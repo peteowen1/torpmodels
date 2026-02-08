@@ -30,11 +30,10 @@ model_data_wp <- model_data_epv %>%
   torp::clean_model_data_wp()
 
 # XGBoost parameters
-nrounds <- 100
 params <- list(
   booster = "gbtree",
   objective = "binary:logistic",
-  eval_metric = c("logloss"),
+  eval_metric = "logloss",
   tree_method = "hist",
   eta = 0.1,
   gamma = 0,
@@ -44,20 +43,49 @@ params <- list(
 )
 
 # Create training matrix
-full_train <- xgboost::xgb.DMatrix(
-  stats::model.matrix(~ . + 0,
-    data = model_data_wp %>% torp::select_wp_model_vars()
-  ),
-  label = model_data_wp$label_wp
-)
+wp_vars <- model_data_wp %>% torp::select_wp_model_vars()
+X_train <- stats::model.matrix(~ . + 0, data = wp_vars)
+y_train <- model_data_wp$label_wp
 
-# Train the model
-cli::cli_inform("Training WP model...")
+full_train <- xgboost::xgb.DMatrix(data = X_train, label = y_train)
+
+# Create match-grouped CV folds to prevent data leakage
+cli::cli_inform("Creating match-grouped CV folds...")
+match_ids <- unique(model_data_wp$torp_match_id)
 set.seed(1234)
-wp_model <- xgboost::xgboost(
+match_folds <- sample(rep(1:5, length.out = length(match_ids)))
+names(match_folds) <- match_ids
+row_folds <- match_folds[model_data_wp$torp_match_id]
+folds <- lapply(1:5, function(k) which(row_folds == k))
+
+# Cross-validation to find optimal nrounds
+cli::cli_inform("Running 5-fold CV with match-grouped folds...")
+set.seed(1234)
+cv_result <- xgboost::xgb.cv(
   params = params,
   data = full_train,
-  nrounds = nrounds,
+  nrounds = 500,
+  folds = folds,
+  early_stopping_rounds = 20,
+  print_every_n = 20,
+  verbose = 1
+)
+
+# Get optimal nrounds
+optimal_nrounds <- cv_result$best_iteration
+if (is.null(optimal_nrounds) || length(optimal_nrounds) == 0) {
+  optimal_nrounds <- which.min(cv_result$evaluation_log$test_logloss_mean)
+}
+cli::cli_inform("Optimal nrounds: {optimal_nrounds}")
+cli::cli_inform("Best CV logloss: {min(cv_result$evaluation_log$test_logloss_mean)}")
+
+# Train final model
+cli::cli_inform("Training final WP model...")
+set.seed(1234)
+wp_model <- xgboost::xgb.train(
+  params = params,
+  data = full_train,
+  nrounds = optimal_nrounds,
   print_every_n = 10
 )
 

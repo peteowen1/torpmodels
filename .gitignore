@@ -5,3 +5,6 @@
 
 # Model files - stored in GitHub releases, not tracked in git
 inst/models/
+
+# Debug scripts - ad-hoc analysis, not tracked
+data-raw/debug/
