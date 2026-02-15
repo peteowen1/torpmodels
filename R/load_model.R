@@ -24,6 +24,9 @@ get_models_dir <- function() {
   cache_dir <- getOption("torpmodels.cache_dir", NULL)
 
   if (!is.null(cache_dir)) {
+    if (!dir.exists(cache_dir)) {
+      dir.create(cache_dir, recursive = TRUE)
+    }
     return(cache_dir)
   }
 
@@ -176,7 +179,34 @@ list_available_models <- function() {
     "bounces", "one_percenters", "goal_assists", "marks_inside50",
     "tackles_inside50", "shots_at_goal", "goal_accuracy", "turnovers",
     "intercepts", "score_involvements", "disposal_efficiency",
-    "time_on_ground_percentage", "total_possessions"
+    "time_on_ground_percentage", "total_possessions",
+    # Extended stats models
+    "extended_stats_centre_bounce_attendances",
+    "extended_stats_contest_def_loss_percentage",
+    "extended_stats_contest_def_losses",
+    "extended_stats_contest_def_one_on_ones",
+    "extended_stats_contest_off_one_on_ones",
+    "extended_stats_contest_off_wins",
+    "extended_stats_contest_off_wins_percentage",
+    "extended_stats_contested_possession_rate",
+    "extended_stats_def_half_pressure_acts",
+    "extended_stats_effective_disposals",
+    "extended_stats_effective_kicks",
+    "extended_stats_f50ground_ball_gets",
+    "extended_stats_ground_ball_gets",
+    "extended_stats_hitout_to_advantage_rate",
+    "extended_stats_hitout_win_percentage",
+    "extended_stats_hitouts_to_advantage",
+    "extended_stats_intercept_marks",
+    "extended_stats_kick_efficiency",
+    "extended_stats_kick_to_handball_ratio",
+    "extended_stats_kickins",
+    "extended_stats_kickins_playon",
+    "extended_stats_marks_on_lead",
+    "extended_stats_pressure_acts",
+    "extended_stats_ruck_contests",
+    "extended_stats_score_launches",
+    "extended_stats_spoils"
   )
 
   list(
