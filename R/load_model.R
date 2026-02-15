@@ -114,6 +114,15 @@ load_torp_model <- function(model_name, force_download = FALSE, verbose = TRUE) 
 #' disposals_model <- load_stat_model("disposals")
 #' }
 load_stat_model <- function(stat_name, force_download = FALSE, verbose = TRUE) {
+  if (!grepl("^[a-z_]+$", stat_name)) {
+    cli::cli_abort("Invalid stat name: {stat_name}. Must contain only lowercase letters and underscores.")
+  }
+
+  known_stats <- list_available_models()$stat_models
+  if (!stat_name %in% known_stats) {
+    cli::cli_abort("Unknown stat: {stat_name}. See {.fn list_available_models} for available stats.")
+  }
+
   model_file <- paste0(stat_name, ".rds")
   release_tag <- "stat-models"
 
@@ -152,7 +161,7 @@ load_stat_model <- function(stat_name, force_download = FALSE, verbose = TRUE) {
 #' list_available_models()
 list_available_models <- function() {
   core_models <- c(
-    "ep" = "Expected Points (EP) model - GAM for predicting expected points from field position",
+    "ep" = "Expected Points (EP) model - XGBoost multiclass for predicting expected points from field position",
     "wp" = "Win Probability (WP) model - predicts probability of winning from game state",
     "shot" = "Shot outcome model - ordered categorical model for shot results",
     "xgb_win" = "XGBoost match prediction model"
@@ -249,6 +258,7 @@ check_model_cache <- function() {
 #' clear_model_cache("stat")
 #' }
 clear_model_cache <- function(type = "all", verbose = TRUE) {
+  type <- match.arg(type, c("all", "core", "stat"))
   models_dir <- get_models_dir()
 
   if (type %in% c("all", "core")) {

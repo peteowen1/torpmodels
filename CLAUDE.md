@@ -76,6 +76,8 @@ list_available_models()     # List available models
 ### Cross-Validation Strategy
 All XGBoost training uses **match-grouped CV folds** to prevent data leakage. Rows from the same match are always in the same fold, preventing the model from learning match-specific patterns.
 
+**Known limitation (EP→WP leakage):** The EP model is trained on all data before its predictions are used as WP features. This means WP's CV metrics may be slightly optimistic because EP predictions on the WP training set are in-sample for EP. The practical impact is small if EP generalizes well, but true out-of-sample WP performance may be marginally worse than CV suggests.
+
 ## Training Scripts (data-raw/)
 
 Training scripts are organized by model type:
