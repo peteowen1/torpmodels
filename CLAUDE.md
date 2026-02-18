@@ -85,8 +85,8 @@ Training scripts are organized by model type:
 - `02-wp-model/` - Win Probability model (XGBoost) - requires EP model via `torp::add_epv_vars()`
 - `03-shot-model/` - Shot outcome model (ordered categorical GAM)
 - `04-xgb-model/` - Match prediction model (XGBoost) - special prerequisites below
-- `stat-models/` - Per-statistic GAM models
-- `debug/` - Ad-hoc analysis scripts (gitignored). Use this folder for exploratory/debugging work that shouldn't be committed.
+- `convert_rda_to_rds.R` - Utility to convert legacy .rda model files to .rds format
+- `debug/` - Ad-hoc analysis scripts (gitignored). Contains `train_all_models.R` (EP+WP together) and `train_shot_xgb_models.R`.
 
 ### Training Prerequisites
 
