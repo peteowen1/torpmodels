@@ -12,7 +12,7 @@ library(xgboost)
 
 # Load torp for data loading functions
 if (!require(torp)) {
-  devtools::load_all("../../torp")  # Load from sibling directory
+  devtools::load_all("../torp")  # Load from sibling directory
 }
 
 # Load training data
