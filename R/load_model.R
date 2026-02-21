@@ -414,7 +414,7 @@ download_model_from_release <- function(file_name, release_tag, local_path, verb
 
     download.file(url, local_path, mode = "wb", quiet = !verbose)
 
-    if (file.exists(local_path) && file.size(local_path) > 0) {
+    if (file.exists(local_path) && file.size(local_path) > 1000) {
       if (verbose) cli::cli_inform("Successfully downloaded {file_name}")
       return(invisible(TRUE))
     }

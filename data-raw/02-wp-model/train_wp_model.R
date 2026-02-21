@@ -34,6 +34,9 @@ pbp <- torp::clean_pbp(chains)
 cli::cli_inform("Preparing EPV model data...")
 model_data_epv <- torp::clean_model_data_epv(pbp)
 
+# NOTE: EP predictions here are IN-SAMPLE — the EP model was trained on all data,
+# so these predictions are not truly out-of-sample for WP training. This makes WP's
+# CV metrics ~1-2% optimistic. For true OOS evaluation, use cross-validated EP preds.
 cli::cli_inform("Adding EPV variables and preparing WP data...")
 model_data_wp <- model_data_epv %>%
   torp::add_epv_vars() %>%

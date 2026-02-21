@@ -13,11 +13,18 @@ if (!require(torp)) {
   devtools::load_all("../../torp")  # Load from sibling directory
 }
 
-# Check that the modelling data exists
-# Note: This assumes team_mdl_df was prepared by running
-# torp/data-raw/02-models/build_match_predictions.R first
+# Load team_mdl_df: check memory first, then tempdir, then abort with instructions
 if (!exists("team_mdl_df")) {
-  stop("`team_mdl_df` not found. Run build_match_predictions.R first to prepare the data.")
+  team_mdl_path <- file.path(tempdir(), "team_mdl_df.rds")
+  if (file.exists(team_mdl_path)) {
+    cli::cli_inform("Loading team_mdl_df from {team_mdl_path}")
+    team_mdl_df <- readRDS(team_mdl_path)
+  } else {
+    stop(
+      "`team_mdl_df` not found in memory or at ", team_mdl_path, ".\n",
+      "Run build_match_predictions.R first (it saves team_mdl_df to tempdir)."
+    )
+  }
 }
 
 # Prepare clean modeling dataset
