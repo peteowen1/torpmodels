@@ -5,7 +5,7 @@
 # Package-level constants for available models
 # ---------------------------------------------
 
-#' @keywords internal
+#' @noRd
 .CORE_MODELS <- c(
   "ep" = "Expected Points (EP) model - XGBoost multiclass for predicting expected points from field position",
   "wp" = "Win Probability (WP) model - predicts probability of winning from game state",
@@ -13,7 +13,7 @@
   "xgb_win" = "XGBoost match prediction model"
 )
 
-#' @keywords internal
+#' @noRd
 .STAT_MODELS <- c(
   "goals", "behinds", "disposals", "kicks", "handballs", "marks",
   "contested_marks", "tackles", "hitouts", "frees_for", "frees_against",
