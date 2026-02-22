@@ -13,7 +13,7 @@ GitHub releases and cached locally after first download.
 \section{Core Models}{
 
 \itemize{
-\item \strong{ep_model} - Expected Points GAM model
+\item \strong{ep_model} - Expected Points XGBoost multiclass model
 \item \strong{wp_model} - Win Probability model
 \item \strong{shot_ocat_mdl} - Shot outcome ordered categorical model
 \item \strong{xgb_win_model} - XGBoost match prediction model

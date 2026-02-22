@@ -8,3 +8,7 @@ inst/models/
 
 # Debug scripts - ad-hoc analysis, not tracked
 data-raw/debug/
+
+# Claude Code files
+.claude/
+CLAUDE.md

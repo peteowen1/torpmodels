@@ -6,7 +6,7 @@
 #'
 #' @section Core Models:
 #' \itemize{
-#'   \item **ep_model** - Expected Points GAM model
+#'   \item **ep_model** - Expected Points XGBoost multiclass model
 #'   \item **wp_model** - Win Probability model
 #'   \item **shot_ocat_mdl** - Shot outcome ordered categorical model
 #'   \item **xgb_win_model** - XGBoost match prediction model

@@ -2,6 +2,57 @@
 # =======================
 # Functions for loading pre-trained models from local cache or GitHub releases
 
+# Package-level constants for available models
+# ---------------------------------------------
+
+#' @noRd
+.CORE_MODELS <- c(
+  "ep" = "Expected Points (EP) model - XGBoost multiclass for predicting expected points from field position",
+  "wp" = "Win Probability (WP) model - predicts probability of winning from game state",
+  "shot" = "Shot outcome model - ordered categorical model for shot results",
+  "xgb_win" = "XGBoost match prediction model"
+)
+
+#' @noRd
+.STAT_MODELS <- c(
+  "goals", "behinds", "disposals", "kicks", "handballs", "marks",
+  "contested_marks", "tackles", "hitouts", "frees_for", "frees_against",
+  "inside50s", "rebound50s", "clearances_total_clearances",
+  "clearances_centre_clearances", "clearances_stoppage_clearances",
+  "contested_possessions", "uncontested_possessions", "clangers",
+  "bounces", "one_percenters", "goal_assists", "marks_inside50",
+  "tackles_inside50", "shots_at_goal", "goal_accuracy", "turnovers",
+  "intercepts", "score_involvements", "disposal_efficiency",
+  "time_on_ground_percentage", "total_possessions",
+  # Extended stats models
+  "extended_stats_centre_bounce_attendances",
+  "extended_stats_contest_def_loss_percentage",
+  "extended_stats_contest_def_losses",
+  "extended_stats_contest_def_one_on_ones",
+  "extended_stats_contest_off_one_on_ones",
+  "extended_stats_contest_off_wins",
+  "extended_stats_contest_off_wins_percentage",
+  "extended_stats_contested_possession_rate",
+  "extended_stats_def_half_pressure_acts",
+  "extended_stats_effective_disposals",
+  "extended_stats_effective_kicks",
+  "extended_stats_f50ground_ball_gets",
+  "extended_stats_ground_ball_gets",
+  "extended_stats_hitout_to_advantage_rate",
+  "extended_stats_hitout_win_percentage",
+  "extended_stats_hitouts_to_advantage",
+  "extended_stats_intercept_marks",
+  "extended_stats_kick_efficiency",
+  "extended_stats_kick_to_handball_ratio",
+  "extended_stats_kickins",
+  "extended_stats_kickins_playon",
+  "extended_stats_marks_on_lead",
+  "extended_stats_pressure_acts",
+  "extended_stats_ruck_contests",
+  "extended_stats_score_launches",
+  "extended_stats_spoils"
+)
+
 #' Get the torpmodels repository
 #'
 #' @return Character string of the repository in format "owner/repo"
@@ -24,6 +75,9 @@ get_models_dir <- function() {
   cache_dir <- getOption("torpmodels.cache_dir", NULL)
 
   if (!is.null(cache_dir)) {
+    if (!dir.exists(cache_dir)) {
+      dir.create(cache_dir, recursive = TRUE)
+    }
     return(cache_dir)
   }
 
@@ -79,7 +133,7 @@ load_torp_model <- function(model_name, force_download = FALSE, verbose = TRUE) 
     if (verbose) {
       cli::cli_inform("Loading {model_name} from local cache")
     }
-    return(readRDS(local_path))
+    return(safe_read_rds(local_path, model_name))
   }
 
   # Download from GitHub release
@@ -93,7 +147,7 @@ load_torp_model <- function(model_name, force_download = FALSE, verbose = TRUE) 
     cli::cli_abort("Failed to download model: {model_name}")
   }
 
-  return(readRDS(local_path))
+  return(safe_read_rds(local_path, model_name))
 }
 
 #' Load a Stat Model
@@ -114,6 +168,15 @@ load_torp_model <- function(model_name, force_download = FALSE, verbose = TRUE) 
 #' disposals_model <- load_stat_model("disposals")
 #' }
 load_stat_model <- function(stat_name, force_download = FALSE, verbose = TRUE) {
+  if (!grepl("^[a-z_]+$", stat_name)) {
+    cli::cli_abort("Invalid stat name: {stat_name}. Must contain only lowercase letters and underscores.")
+  }
+
+  known_stats <- list_available_models()$stat_models
+  if (!stat_name %in% known_stats) {
+    cli::cli_abort("Unknown stat: {stat_name}. See {.fn list_available_models} for available stats.")
+  }
+
   model_file <- paste0(stat_name, ".rds")
   release_tag <- "stat-models"
 
@@ -124,7 +187,7 @@ load_stat_model <- function(stat_name, force_download = FALSE, verbose = TRUE) {
     if (verbose) {
       cli::cli_inform("Loading stat model '{stat_name}' from local cache")
     }
-    return(readRDS(local_path))
+    return(safe_read_rds(local_path, stat_name))
   }
 
   # Download from GitHub release
@@ -138,7 +201,7 @@ load_stat_model <- function(stat_name, force_download = FALSE, verbose = TRUE) {
     cli::cli_abort("Failed to download stat model: {stat_name}")
   }
 
-  return(readRDS(local_path))
+  return(safe_read_rds(local_path, stat_name))
 }
 
 #' List Available Models
@@ -151,28 +214,9 @@ load_stat_model <- function(stat_name, force_download = FALSE, verbose = TRUE) {
 #' @examples
 #' list_available_models()
 list_available_models <- function() {
-  core_models <- c(
-    "ep" = "Expected Points (EP) model - GAM for predicting expected points from field position",
-    "wp" = "Win Probability (WP) model - predicts probability of winning from game state",
-    "shot" = "Shot outcome model - ordered categorical model for shot results",
-    "xgb_win" = "XGBoost match prediction model"
-  )
-
-  stat_models <- c(
-    "goals", "behinds", "disposals", "kicks", "handballs", "marks",
-    "contested_marks", "tackles", "hitouts", "frees_for", "frees_against",
-    "inside50s", "rebound50s", "clearances_total_clearances",
-    "clearances_centre_clearances", "clearances_stoppage_clearances",
-    "contested_possessions", "uncontested_possessions", "clangers",
-    "bounces", "one_percenters", "goal_assists", "marks_inside50",
-    "tackles_inside50", "shots_at_goal", "goal_accuracy", "turnovers",
-    "intercepts", "score_involvements", "disposal_efficiency",
-    "time_on_ground_percentage", "total_possessions"
-  )
-
   list(
-    core_models = core_models,
-    stat_models = stat_models
+    core_models = .CORE_MODELS,
+    stat_models = .STAT_MODELS
   )
 }
 
@@ -249,6 +293,7 @@ check_model_cache <- function() {
 #' clear_model_cache("stat")
 #' }
 clear_model_cache <- function(type = "all", verbose = TRUE) {
+  type <- match.arg(type, c("all", "core", "stat"))
   models_dir <- get_models_dir()
 
   if (type %in% c("all", "core")) {
@@ -297,6 +342,39 @@ normalize_model_name <- function(model_name) {
   return(model_map[[model_name]])
 }
 
+#' Safely read an RDS file with error handling
+#'
+#' Wraps readRDS() in tryCatch to handle corrupted downloads gracefully.
+#' Deletes the corrupted file so the next attempt starts fresh.
+#'
+#' @param path Path to the RDS file
+#' @param label Label for error messages (e.g., model name)
+#' @return The deserialized R object
+#' @keywords internal
+safe_read_rds <- function(path, label = basename(path)) {
+  tryCatch(
+    readRDS(path),
+    error = function(e) {
+      msg <- conditionMessage(e)
+      # Only delete cached file for actual corruption/deserialization errors
+      # Don't delete for environment issues (missing packages, OOM, etc.)
+      is_corruption <- grepl(
+        "unknown input format|not an RDS file|decompression|bad restore file|unexpected end|ascii85|error reading from connection",
+        msg, ignore.case = TRUE
+      )
+      if (is_corruption) {
+        unlink(path)
+        cli::cli_abort(
+          "Model file for {label} is corrupted: {msg}. Cache cleared, try again."
+        )
+      }
+      cli::cli_abort(
+        "Failed to load model {label}: {msg}"
+      )
+    }
+  )
+}
+
 #' Download model from GitHub release
 #' @keywords internal
 #' @importFrom cli cli_inform cli_warn cli_abort
@@ -309,6 +387,9 @@ download_model_from_release <- function(file_name, release_tag, local_path, verb
   if (!dir.exists(parent_dir)) {
     dir.create(parent_dir, recursive = TRUE)
   }
+
+  pb_error <- NULL
+  url_error <- NULL
 
   # Try piggyback first (preferred method)
   tryCatch({
@@ -323,13 +404,19 @@ download_model_from_release <- function(file_name, release_tag, local_path, verb
     )
 
     temp_path <- file.path(temp_dir, file_name)
-    if (file.exists(temp_path)) {
+    if (file.exists(temp_path) && file.size(temp_path) > 1000) {
       file.copy(temp_path, local_path, overwrite = TRUE)
       unlink(temp_path)
       if (verbose) cli::cli_inform("Successfully downloaded {file_name}")
       return(invisible(TRUE))
+    } else if (file.exists(temp_path)) {
+      unlink(temp_path)
+      stop("Downloaded file is too small (likely an error page)")
+    } else {
+      stop("piggyback reported success but no file was written")
     }
   }, error = function(e) {
+    pb_error <<- e$message
     if (verbose) cli::cli_warn("piggyback download failed: {e$message}")
   })
 
@@ -344,13 +431,24 @@ download_model_from_release <- function(file_name, release_tag, local_path, verb
 
     download.file(url, local_path, mode = "wb", quiet = !verbose)
 
-    if (file.exists(local_path) && file.size(local_path) > 0) {
+    if (file.exists(local_path) && file.size(local_path) > 1000) {
       if (verbose) cli::cli_inform("Successfully downloaded {file_name}")
       return(invisible(TRUE))
+    } else if (file.exists(local_path)) {
+      bad_size <- file.size(local_path)
+      unlink(local_path)
+      stop(paste0("Downloaded file too small (", bad_size, " bytes), likely an error page"))
     }
   }, error = function(e) {
+    url_error <<- e$message
     cli::cli_warn("Direct download failed: {e$message}")
   })
 
-  cli::cli_abort("Failed to download {file_name} from release {release_tag}")
+  # Both methods failed - report both errors
+  details <- character()
+  if (!is.null(pb_error)) details <- c(details, paste0("piggyback: ", pb_error))
+  if (!is.null(url_error)) details <- c(details, paste0("direct URL: ", url_error))
+  detail_msg <- paste(details, collapse = "; ")
+
+  cli::cli_abort("Failed to download {file_name} from release {release_tag}. {detail_msg}")
 }
