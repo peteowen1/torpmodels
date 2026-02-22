@@ -10,7 +10,17 @@ library(MLmetrics)
 
 # Load torp for data loading functions
 if (!require(torp)) {
-  devtools::load_all("../../torp")  # Load from sibling directory
+  # Try common relative paths depending on working directory
+  torp_paths <- c("../torp", "../../torp", "../../../torp")
+  loaded <- FALSE
+  for (p in torp_paths) {
+    if (file.exists(file.path(p, "DESCRIPTION"))) {
+      devtools::load_all(p)
+      loaded <- TRUE
+      break
+    }
+  }
+  if (!loaded) stop("Cannot find torp package. Install it or run from torpverse workspace.")
 }
 
 # Load team_mdl_df: check memory first, then tempdir, then abort with instructions

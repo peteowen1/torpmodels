@@ -355,9 +355,21 @@ safe_read_rds <- function(path, label = basename(path)) {
   tryCatch(
     readRDS(path),
     error = function(e) {
-      unlink(path)
+      msg <- conditionMessage(e)
+      # Only delete cached file for actual corruption/deserialization errors
+      # Don't delete for environment issues (missing packages, OOM, etc.)
+      is_corruption <- grepl(
+        "unknown input format|not an RDS file|decompression|bad restore file|unexpected end|ascii85",
+        msg, ignore.case = TRUE
+      )
+      if (is_corruption) {
+        unlink(path)
+        cli::cli_abort(
+          "Model file for {label} is corrupted: {msg}. Cache cleared, try again."
+        )
+      }
       cli::cli_abort(
-        "Model file for {label} is corrupted or unreadable: {e$message}. Cache cleared, try again."
+        "Failed to load model {label}: {msg}"
       )
     }
   )
@@ -392,11 +404,14 @@ download_model_from_release <- function(file_name, release_tag, local_path, verb
     )
 
     temp_path <- file.path(temp_dir, file_name)
-    if (file.exists(temp_path)) {
+    if (file.exists(temp_path) && file.size(temp_path) > 1000) {
       file.copy(temp_path, local_path, overwrite = TRUE)
       unlink(temp_path)
       if (verbose) cli::cli_inform("Successfully downloaded {file_name}")
       return(invisible(TRUE))
+    } else if (file.exists(temp_path)) {
+      unlink(temp_path)
+      stop("Downloaded file is too small (likely an error page)")
     }
   }, error = function(e) {
     pb_error <<- e$message
@@ -417,6 +432,9 @@ download_model_from_release <- function(file_name, release_tag, local_path, verb
     if (file.exists(local_path) && file.size(local_path) > 1000) {
       if (verbose) cli::cli_inform("Successfully downloaded {file_name}")
       return(invisible(TRUE))
+    } else if (file.exists(local_path)) {
+      if (verbose) cli::cli_warn("Downloaded file too small ({file.size(local_path)} bytes), likely an error page")
+      unlink(local_path)
     }
   }, error = function(e) {
     url_error <<- e$message

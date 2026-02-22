@@ -107,6 +107,41 @@ test_that("load_stat_model() rejects unknown stat names", {
   expect_error(load_stat_model("nonexistent_stat"), "Unknown stat")
 })
 
+test_that("safe_read_rds() returns object for valid RDS file", {
+  withr::with_tempdir({
+    path <- file.path(getwd(), "valid.rds")
+    saveRDS(list(a = 1, b = "test"), path)
+    result <- torpmodels:::safe_read_rds(path, "test_model")
+    expect_equal(result$a, 1)
+    expect_true(file.exists(path))
+  })
+})
+
+test_that("safe_read_rds() deletes corrupted file and raises error", {
+  withr::with_tempdir({
+    path <- file.path(getwd(), "corrupt.rds")
+    writeLines("not a valid rds file", path)
+    expect_true(file.exists(path))
+    expect_error(
+      torpmodels:::safe_read_rds(path, "broken_model"),
+      "corrupted"
+    )
+    expect_false(file.exists(path))
+  })
+})
+
+test_that("safe_read_rds() does not delete file on non-corruption errors", {
+  withr::with_tempdir({
+    path <- file.path(getwd(), "valid.rds")
+    # Save an object that references a non-existent class
+    obj <- structure(list(x = 1), class = "NonExistentS3Class")
+    saveRDS(obj, path)
+    # This should load fine since S3 classes don't need registration
+    result <- torpmodels:::safe_read_rds(path, "test_model")
+    expect_true(file.exists(path))
+  })
+})
+
 test_that("EP model description says XGBoost, not GAM", {
   models <- list_available_models()
   expect_true(grepl("XGBoost", models$core_models[["ep"]]))
