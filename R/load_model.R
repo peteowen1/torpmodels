@@ -359,7 +359,7 @@ safe_read_rds <- function(path, label = basename(path)) {
       # Only delete cached file for actual corruption/deserialization errors
       # Don't delete for environment issues (missing packages, OOM, etc.)
       is_corruption <- grepl(
-        "unknown input format|not an RDS file|decompression|bad restore file|unexpected end|ascii85",
+        "unknown input format|not an RDS file|decompression|bad restore file|unexpected end|ascii85|error reading from connection",
         msg, ignore.case = TRUE
       )
       if (is_corruption) {
@@ -412,6 +412,8 @@ download_model_from_release <- function(file_name, release_tag, local_path, verb
     } else if (file.exists(temp_path)) {
       unlink(temp_path)
       stop("Downloaded file is too small (likely an error page)")
+    } else {
+      stop("piggyback reported success but no file was written")
     }
   }, error = function(e) {
     pb_error <<- e$message
@@ -433,8 +435,9 @@ download_model_from_release <- function(file_name, release_tag, local_path, verb
       if (verbose) cli::cli_inform("Successfully downloaded {file_name}")
       return(invisible(TRUE))
     } else if (file.exists(local_path)) {
-      if (verbose) cli::cli_warn("Downloaded file too small ({file.size(local_path)} bytes), likely an error page")
+      bad_size <- file.size(local_path)
       unlink(local_path)
+      stop(paste0("Downloaded file too small (", bad_size, " bytes), likely an error page"))
     }
   }, error = function(e) {
     url_error <<- e$message
