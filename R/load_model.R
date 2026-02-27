@@ -10,7 +10,8 @@
   "ep" = "Expected Points (EP) model - XGBoost multiclass for predicting expected points from field position",
   "wp" = "Win Probability (WP) model - predicts probability of winning from game state",
   "shot" = "Shot outcome model - ordered categorical model for shot results",
-  "xgb_win" = "XGBoost match prediction model"
+  "match_gams" = "Sequential GAM pipeline for match predictions (5 models: total_xpoints, xscore_diff, conv_diff, score_diff, win)",
+  "xgb_win" = "Legacy XGBoost match prediction model (superseded by match_gams)"
 )
 
 #' @noRd
@@ -64,8 +65,8 @@ get_torpmodels_repo <- function() {
 #' Get the local models directory
 #'
 #' Returns the path to the local models cache directory. By default uses
-#' the inst/models directory within the package, but can be overridden
-#' via the torpmodels.cache_dir option.
+#' \code{tools::R_user_dir("torpmodels", "cache")}, but can be overridden
+#' via the \code{torpmodels.cache_dir} option.
 #'
 #' @return Character string path to local models directory
 #' @keywords internal
@@ -103,7 +104,8 @@ get_models_dir <- function() {
 #'   - "ep" or "ep_model" - Expected Points model
 #'   - "wp" or "wp_model" - Win Probability model
 #'   - "shot" or "shot_ocat_mdl" - Shot outcome classification model
-#'   - "xgb_win" or "xgb_win_model" - XGBoost match prediction model
+#'   - "match_gams" - Sequential GAM pipeline for match predictions (production)
+#'   - "xgb_win" or "xgb_win_model" - Legacy XGBoost match prediction model
 #' @param force_download Logical. If TRUE, downloads fresh copy even if cached locally.
 #' @param verbose Logical. If TRUE, prints status messages.
 #'
@@ -120,7 +122,7 @@ load_torp_model <- function(model_name, force_download = FALSE, verbose = TRUE) 
   model_info <- normalize_model_name(model_name)
 
   if (is.null(model_info)) {
-    cli::cli_abort("Unknown model: {model_name}. Available models: ep, wp, shot, xgb_win")
+    cli::cli_abort("Unknown model: {model_name}. Available models: ep, wp, shot, match_gams, xgb_win (legacy)")
   }
 
   model_file <- model_info$file
@@ -234,7 +236,11 @@ check_model_cache <- function() {
   core_dir <- file.path(models_dir, "core")
   stat_dir <- file.path(models_dir, "stat-models")
 
-  core_files <- c("ep_model.rds", "wp_model.rds", "shot_ocat_mdl.rds", "xgb_win_model.rds")
+  core_files <- unique(vapply(
+    names(.CORE_MODELS),
+    function(m) normalize_model_name(m)$file,
+    character(1)
+  ))
 
   results <- data.frame(
     model = character(),
@@ -336,7 +342,8 @@ normalize_model_name <- function(model_name) {
     shot = list(file = "shot_ocat_mdl.rds", tag = "core-models"),
     shot_ocat_mdl = list(file = "shot_ocat_mdl.rds", tag = "core-models"),
     xgb_win = list(file = "xgb_win_model.rds", tag = "core-models"),
-    xgb_win_model = list(file = "xgb_win_model.rds", tag = "core-models")
+    xgb_win_model = list(file = "xgb_win_model.rds", tag = "core-models"),
+    match_gams = list(file = "match_gams.rds", tag = "core-models")
   )
 
   return(model_map[[model_name]])

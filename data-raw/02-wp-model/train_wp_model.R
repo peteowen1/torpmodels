@@ -85,10 +85,7 @@ cv_result <- xgboost::xgb.cv(
 )
 
 # Get optimal nrounds
-optimal_nrounds <- cv_result$best_iteration
-if (is.null(optimal_nrounds) || length(optimal_nrounds) == 0) {
-  optimal_nrounds <- which.min(cv_result$evaluation_log$test_logloss_mean)
-}
+optimal_nrounds <- which.min(cv_result$evaluation_log$test_logloss_mean)
 cli::cli_inform("Optimal nrounds: {optimal_nrounds}")
 cli::cli_inform("Best CV logloss: {min(cv_result$evaluation_log$test_logloss_mean)}")
 

@@ -11,7 +11,7 @@ Character string path to local models directory
 }
 \description{
 Returns the path to the local models cache directory. By default uses
-the inst/models directory within the package, but can be overridden
-via the torpmodels.cache_dir option.
+\code{tools::R_user_dir("torpmodels", "cache")}, but can be overridden
+via the \code{torpmodels.cache_dir} option.
 }
 \keyword{internal}

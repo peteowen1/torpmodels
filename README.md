@@ -22,7 +22,7 @@ devtools::install_github("peteowen1/torpmodels")
 | `ep_model` | XGBoost (multiclass) | Expected Points from field position | ~600 KB |
 | `wp_model` | XGBoost (binary) | Win Probability from game state | ~100 KB |
 | `shot_ocat_mdl` | GAM (ordered categorical) | Shot outcome: miss/behind/goal | ~16 MB |
-| `xgb_win_model` | XGBoost (binary) | Match prediction from team ratings | ~27 KB |
+| `match_gams` | GAM pipeline (5 models) | Sequential match predictions (xPoints → xScore diff → conv diff → score diff → win) | ~2 MB |
 
 ### Stat Models
 
@@ -37,6 +37,7 @@ library(torpmodels)
 ep_model <- load_torp_model("ep")
 wp_model <- load_torp_model("wp")
 shot_model <- load_torp_model("shot")
+match_gams <- load_torp_model("match_gams")
 
 # Load stat models
 goals_model <- load_stat_model("goals")
