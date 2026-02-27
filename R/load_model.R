@@ -236,7 +236,11 @@ check_model_cache <- function() {
   core_dir <- file.path(models_dir, "core")
   stat_dir <- file.path(models_dir, "stat-models")
 
-  core_files <- c("ep_model.rds", "wp_model.rds", "shot_ocat_mdl.rds", "xgb_win_model.rds", "match_gams.rds")
+  core_files <- unique(vapply(
+    names(.CORE_MODELS),
+    function(m) normalize_model_name(m)$file,
+    character(1)
+  ))
 
   results <- data.frame(
     model = character(),

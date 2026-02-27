@@ -388,7 +388,7 @@ train_mask <- !is.na(team_mdl_df$win) & team_mdl_df$season.x < HOLDOUT_SEASON
 cli::cli_progress_step("Training total xPoints model")
 afl_total_xpoints_mdl <- mgcv::bam(
   total_xpoints_adj ~
-    s(team_type_fac.x, bs = "re")
+    s(team_type_fac, bs = "re")
     + s(game_year_decimal.x, bs = "ts")
     + s(game_prop_through_year.x, bs = "cc")
     + s(game_prop_through_month.x, bs = "cc")
@@ -441,7 +441,7 @@ cli::cli_progress_step("Training conversion model")
 gam_df$pred_xscore_diff <- team_mdl_df$pred_xscore_diff[train_mask]
 afl_conv_mdl <- mgcv::bam(
   shot_conv_diff ~
-    s(team_type_fac.x, bs = "re")
+    s(team_type_fac, bs = "re")
     + s(game_year_decimal.x, bs = "ts")
     + s(game_prop_through_year.x, bs = "cc")
     + s(game_prop_through_month.x, bs = "cc")
