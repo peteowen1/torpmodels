@@ -65,8 +65,8 @@ get_torpmodels_repo <- function() {
 #' Get the local models directory
 #'
 #' Returns the path to the local models cache directory. By default uses
-#' the inst/models directory within the package, but can be overridden
-#' via the torpmodels.cache_dir option.
+#' \code{tools::R_user_dir("torpmodels", "cache")}, but can be overridden
+#' via the \code{torpmodels.cache_dir} option.
 #'
 #' @return Character string path to local models directory
 #' @keywords internal
@@ -122,7 +122,7 @@ load_torp_model <- function(model_name, force_download = FALSE, verbose = TRUE) 
   model_info <- normalize_model_name(model_name)
 
   if (is.null(model_info)) {
-    cli::cli_abort("Unknown model: {model_name}. Available models: ep, wp, shot, match_gams")
+    cli::cli_abort("Unknown model: {model_name}. Available models: ep, wp, shot, match_gams, xgb_win (legacy)")
   }
 
   model_file <- model_info$file

@@ -39,7 +39,6 @@ LOG_DIST_OFFSET   <- 10000
 LOG_DIST_DEFAULT  <- 16
 MIN_DATA_SEASON   <- 2021
 MIN_DATA_ROUND    <- 14
-HOME_RATING_BOOST <- 4
 
 # Position Maps ----
 PHASE_MAP <- list(
@@ -97,6 +96,14 @@ teams         <- torp::load_teams(TRUE)
 torp_df_total <- torp::load_torp_ratings()
 
 cli::cli_inform("Loaded: fixtures={nrow(fixtures)}, results={nrow(results)}, teams={nrow(teams)}, ratings={nrow(torp_df_total)}")
+
+stopifnot(
+  "fixtures has 0 rows" = nrow(fixtures) > 0,
+  "results has 0 rows" = nrow(results) > 0,
+  "teams has 0 rows" = nrow(teams) > 0,
+  "torp_df_total has 0 rows" = nrow(torp_df_total) > 0,
+  "xg_df has 0 rows" = nrow(xg_df) > 0
+)
 
 # 2. Build Fixtures (fix_df) ----
 cli::cli_h2("Building fixture features")
@@ -341,9 +348,16 @@ team_mdl_df <- team_mdl_df_tot |>
   filter(season.x > MIN_DATA_SEASON | (season.x == MIN_DATA_SEASON & round.roundNumber.x >= MIN_DATA_ROUND))
 
 ## Adjust total_xpoints ----
+xpoints_scale <- mean(team_mdl_df$total_points, na.rm = TRUE) / mean(team_mdl_df$total_xpoints, na.rm = TRUE)
+if (!is.finite(xpoints_scale)) {
+  stop("Cannot compute xpoints scaling factor (NaN). ",
+       "total_points non-NA: ", sum(!is.na(team_mdl_df$total_points)),
+       ", total_xpoints non-NA: ", sum(!is.na(team_mdl_df$total_xpoints)),
+       ". Check xg_df join.")
+}
 team_mdl_df <- team_mdl_df |>
   mutate(
-    total_xpoints_adj = total_xpoints * (mean(total_points, na.rm = TRUE) / mean(total_xpoints, na.rm = TRUE)),
+    total_xpoints_adj = total_xpoints * xpoints_scale,
     venue_fac = as.factor(venue.x)
   )
 
@@ -485,7 +499,7 @@ afl_win_mdl <- mgcv::bam(
 )
 team_mdl_df$pred_win <- predict(afl_win_mdl, newdata = team_mdl_df, type = "response")
 
-cli::cli_alert_success("GAM pipeline complete (5 models trained on all data)")
+cli::cli_alert_success("GAM pipeline complete (5 models trained on {nrow(gam_df)} rows)")
 
 # 8. Train XGBoost Pipeline (5 sequential models, mirroring GAM pipeline) ----
 # Only runs with a finite HOLDOUT_SEASON for GAM vs XGBoost comparison
@@ -684,8 +698,21 @@ if (is.finite(HOLDOUT_SEASON)) {
 ## Upload to GitHub releases ----
 if (requireNamespace("piggyback", quietly = TRUE)) {
   cli::cli_inform("Uploading GAM models to GitHub release...")
-  piggyback::pb_upload(gam_path, repo = "peteowen1/torpmodels", tag = "core-models")
-  cli::cli_inform("Upload complete!")
+  tryCatch({
+    piggyback::pb_upload(gam_path, repo = "peteowen1/torpmodels", tag = "core-models")
+    cli::cli_alert_success("Upload complete!")
+  }, error = function(e) {
+    cli::cli_warn(c(
+      "Upload to GitHub failed: {e$message}",
+      "i" = "Models saved locally at {gam_path}",
+      "i" = "Upload manually with: piggyback::pb_upload('{gam_path}', repo='peteowen1/torpmodels', tag='core-models')"
+    ))
+  })
+} else {
+  cli::cli_warn(c(
+    "piggyback package not installed -- skipping upload to GitHub releases.",
+    "i" = "Models saved locally at {gam_path}"
+  ))
 }
 
 tictoc::toc()

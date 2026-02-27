@@ -12,6 +12,10 @@ test_that("normalize_model_name() returns correct mappings", {
 
   xgb <- torpmodels:::normalize_model_name("xgb_win")
   expect_equal(xgb$file, "xgb_win_model.rds")
+
+  gams <- torpmodels:::normalize_model_name("match_gams")
+  expect_equal(gams$file, "match_gams.rds")
+  expect_equal(gams$tag, "core-models")
 })
 
 test_that("normalize_model_name() returns NULL for unknown models", {
@@ -35,6 +39,7 @@ test_that("list_available_models() returns expected structure", {
   expect_true("wp" %in% names(models$core_models))
   expect_true("shot" %in% names(models$core_models))
   expect_true("xgb_win" %in% names(models$core_models))
+  expect_true("match_gams" %in% names(models$core_models))
 
   expect_true("goals" %in% models$stat_models)
   expect_true("disposals" %in% models$stat_models)
