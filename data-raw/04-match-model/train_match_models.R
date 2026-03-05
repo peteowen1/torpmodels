@@ -10,6 +10,7 @@
 # Parameters ----
 # Tweak these before running in RStudio
 HOLDOUT_SEASON <- Inf   # Inf = production (train on all data). Set to e.g. 2025 for evaluation/comparison.
+UPLOAD_TO_GITHUB <- TRUE # FALSE = save locally only, don't upload to GitHub releases
 
 # Setup ----
 library(tidyverse)
@@ -726,7 +727,9 @@ if (is.finite(HOLDOUT_SEASON)) {
 }
 
 ## Upload to GitHub releases ----
-if (requireNamespace("piggyback", quietly = TRUE)) {
+if (!UPLOAD_TO_GITHUB) {
+  cli::cli_inform("Skipping GitHub upload (UPLOAD_TO_GITHUB = FALSE). Models saved locally at {gam_path}")
+} else if (requireNamespace("piggyback", quietly = TRUE)) {
   cli::cli_inform("Uploading GAM models to GitHub release...")
   tryCatch({
     piggyback::pb_upload(gam_path, repo = "peteowen1/torpmodels", tag = "core-models")
