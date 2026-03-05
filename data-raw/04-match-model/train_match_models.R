@@ -5,10 +5,11 @@
 #   2. Trains 5 sequential GAM models (production match prediction pipeline)
 #   3. Saves & uploads match_gams.rds to GitHub releases
 #
-# Set HOLDOUT_SEASON to a finite year (e.g. 2025) to also train a parallel
-# XGBoost pipeline for comparison. In production mode (Inf), only GAMs are trained.
-#
 # Data pipeline adapted from torp's build_match_predictions.R.
+
+# Parameters ----
+# Tweak these before running in RStudio
+HOLDOUT_SEASON <- Inf   # Inf = production (train on all data). Set to e.g. 2025 for evaluation/comparison.
 
 # Setup ----
 library(tidyverse)
@@ -395,9 +396,6 @@ cli::cli_inform("Seasons: {paste(sort(unique(team_mdl_df$season.x)), collapse = 
 # ========================================================================
 # TRAIN MODELS (temporal holdout: train < HOLDOUT_SEASON, test >= HOLDOUT_SEASON)
 # ========================================================================
-
-# Set to Inf for production (train on all data). Set to e.g. 2025 for evaluation.
-HOLDOUT_SEASON <- Inf
 
 gam_df  <- team_mdl_df |> filter(!is.na(win), season.x < HOLDOUT_SEASON)
 test_df <- team_mdl_df |> filter(!is.na(win), season.x >= HOLDOUT_SEASON)
