@@ -95,6 +95,18 @@ results       <- torp::load_results(TRUE)
 teams         <- torp::load_teams(TRUE)
 torp_df_total <- torp::load_torp_ratings()
 
+# Weather data (historical backfill from torp)
+weather_path <- file.path("..", "torp", "data-raw", "weather_data.parquet")
+if (!file.exists(weather_path)) weather_path <- file.path("..", "..", "torp", "data-raw", "weather_data.parquet")
+if (file.exists(weather_path)) {
+  weather_df <- arrow::read_parquet(weather_path) |>
+    dplyr::select(providerId, temp_avg, precipitation_total, wind_avg, humidity_avg, is_roof)
+  cli::cli_inform("Weather: {nrow(weather_df)} match records loaded")
+} else {
+  cli::cli_warn("Weather data not found — weather features will use medians")
+  weather_df <- tibble::tibble(providerId = character())
+}
+
 cli::cli_inform("Loaded: fixtures={nrow(fixtures)}, results={nrow(results)}, teams={nrow(teams)}, ratings={nrow(torp_df_total)}")
 
 stopifnot(
@@ -161,7 +173,11 @@ torp_sum_cols <- c("torp", "torp_recv", "torp_disp", "torp_spoil", "torp_hitout"
 team_lineup_df <- teams |>
   left_join(torp_df_total, by = c("player.playerId" = "player_id", "season" = "season", "round.roundNumber" = "round")) |>
   filter((position.x != "EMERG" & position.x != "SUB") | is.na(position.x)) |>
-  mutate(across(all_of(torp_sum_cols), ~tidyr::replace_na(.x, 0)))
+  mutate(
+    across(all_of(torp_sum_cols), ~tidyr::replace_na(.x, 0)),
+    lineup_tog = tidyr::replace_na(torp:::POSITION_AVG_TOG[position.x], 0.75),
+    across(all_of(torp_sum_cols), ~ .x * lineup_tog)
+  )
 
 # Generate position columns from lookup tables
 for (col in names(PHASE_MAP))
@@ -361,6 +377,18 @@ team_mdl_df <- team_mdl_df |>
     venue_fac = as.factor(venue.x)
   )
 
+## Join weather ----
+team_mdl_df <- team_mdl_df |>
+  left_join(weather_df, by = "providerId") |>
+  mutate(
+    temp_avg = replace_na(temp_avg, median(temp_avg, na.rm = TRUE)),
+    wind_avg = replace_na(wind_avg, median(wind_avg, na.rm = TRUE)),
+    humidity_avg = replace_na(humidity_avg, median(humidity_avg, na.rm = TRUE)),
+    precipitation_total = replace_na(precipitation_total, 0),
+    is_roof = replace_na(is_roof, FALSE)
+  )
+cli::cli_inform("Weather joined: {sum(!is.na(team_mdl_df$temp_avg))} of {nrow(team_mdl_df)} rows")
+
 cli::cli_inform("team_mdl_df: {nrow(team_mdl_df)} rows, {ncol(team_mdl_df)} cols")
 cli::cli_inform("Seasons: {paste(sort(unique(team_mdl_df$season.x)), collapse = ', ')}")
 
@@ -407,7 +435,11 @@ afl_total_xpoints_mdl <- mgcv::bam(
     + s(familiarity.x, bs = "ts", k = 5) + s(familiarity.y, bs = "ts", k = 5)
     + s(log_dist_diff, bs = "ts", k = 5)
     + s(familiarity_diff, bs = "ts", k = 5)
-    + s(days_rest_diff_fac, bs = "re"),
+    + s(days_rest_diff_fac, bs = "re")
+    + s(temp_avg, bs = "ts", k = 5)
+    + s(wind_avg, bs = "ts", k = 5)
+    + s(humidity_avg, bs = "ts", k = 5)
+    + s(precipitation_total, bs = "ts", k = 5),
   data = gam_df, weights = gam_df$weightz,
   family = gaussian(), nthreads = 4, select = TRUE, discrete = TRUE,
   drop.unused.levels = FALSE
