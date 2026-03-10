@@ -253,7 +253,7 @@ if (!is.null(squiggle_tips) && nrow(squiggle_tips) > 0) {
   # Home-only test set (metrics are identical to full long-form)
   home_test <- team_mdl_df |>
     filter(xgb_test_mask, team_type == "home") |>
-    select(providerId, season = season.x, round = round.roundNumber.x,
+    select(match_id, season = season.x, round = round_number.x,
            home_team = team_name.x, win, score_diff)
 
   # Join squiggle tips to home test matches
