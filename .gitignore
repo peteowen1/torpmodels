@@ -9,6 +9,13 @@ inst/models/
 # Debug scripts - ad-hoc analysis, not tracked
 data-raw/debug/
 
+# Debug scripts
+debug/
+
+# Temporary files
+*.tmp
+*.log
+
 # Claude Code files
 .claude/
 CLAUDE.md
