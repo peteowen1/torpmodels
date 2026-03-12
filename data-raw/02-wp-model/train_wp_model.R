@@ -26,7 +26,7 @@ if (!require(torp)) {
 # Load and prepare training data
 # Note: This assumes clean_model_data_epv data exists or load it
 cli::cli_inform("Loading chains data...")
-chains <- torp::load_chains(TRUE, TRUE)
+chains <- torp::load_chains(TRUE)
 
 cli::cli_inform("Cleaning play-by-play data...")
 pbp <- torp::clean_pbp(chains)
@@ -48,11 +48,13 @@ params <- list(
   objective = "binary:logistic",
   eval_metric = "logloss",
   tree_method = "hist",
-  eta = 0.1,
+  eta = 0.025,
   gamma = 0,
-  monotone_constraints = "(0,0,0,1,1,1,0,1,0,0,0,0,0,0,0)",
+  monotone_constraints = "(0,0,0,0,1,1,1,0,1,1,0,0,0,0,0,0,0,0)",
   max_depth = 6,
-  min_child_weight = 1
+  min_child_weight = 1,
+  subsample = 0.8,
+  colsample_bytree = 0.8
 )
 
 # Create training matrix
