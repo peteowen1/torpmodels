@@ -53,7 +53,11 @@ tictoc::tic("total")
 weather_path <- file.path("..", "torp", "data-raw", "weather_data.parquet")
 if (!file.exists(weather_path)) weather_path <- file.path("..", "..", "torp", "data-raw", "weather_data.parquet")
 
-team_mdl_df <- build_team_mdl_df(weather_path = weather_path)
+# PSR coefficient path
+psr_coef_path <- file.path("..", "torp", "data-raw", "cache-skills", "psr_v2_coefficients.csv")
+if (!file.exists(psr_coef_path)) psr_coef_path <- file.path("..", "..", "torp", "data-raw", "cache-skills", "psr_v2_coefficients.csv")
+
+team_mdl_df <- build_team_mdl_df(weather_path = weather_path, psr_coef_path = psr_coef_path)
 
 cli::cli_inform("Seasons: {paste(sort(unique(team_mdl_df$season.x)), collapse = ', ')}")
 
@@ -71,10 +75,10 @@ team_mdl_df <- gam_result$data
 match_gams <- gam_result$models
 
 gam_df <- team_mdl_df |> filter(!is.na(win), season.x < HOLDOUT_SEASON)
-cli::cli_inform("Train: {nrow(gam_df)} rows ({paste(sort(unique(gam_df$season.x)), collapse=', ')})")
+cli::cli_inform("Train: {nrow(gam_df) / 2} matches ({paste(sort(unique(gam_df$season.x)), collapse=', ')})")
 if (is.finite(HOLDOUT_SEASON)) {
   test_df <- team_mdl_df |> filter(!is.na(win), season.x >= HOLDOUT_SEASON)
-  cli::cli_inform("Test:  {nrow(test_df)} rows (season >= {HOLDOUT_SEASON})")
+  cli::cli_inform("Test:  {nrow(test_df) / 2} matches (season >= {HOLDOUT_SEASON})")
 } else {
   cli::cli_inform("Production mode: training on all data (no holdout)")
 }
@@ -83,160 +87,121 @@ if (is.finite(HOLDOUT_SEASON)) {
 if (is.finite(HOLDOUT_SEASON)) {
 cli::cli_h2("Training XGBoost pipeline (5 sequential models)")
 
-xgb_complete <- team_mdl_df |>
-  filter(!is.na(win), !is.na(total_xpoints_adj), !is.na(xscore_diff),
-         !is.na(shot_conv_diff), !is.na(score_diff))
-xgb_df   <- xgb_complete |> filter(season.x < HOLDOUT_SEASON)
-xgb_test <- xgb_complete |> filter(season.x >= HOLDOUT_SEASON)
-cli::cli_inform("XGBoost train: {nrow(xgb_df)} rows, test: {nrow(xgb_test)} rows")
-
-## Base feature columns ----
-xgb_base_cols <- c(
-  "team_type_fac",
-  "game_year_decimal.x", "game_prop_through_year.x",
-  "game_prop_through_month.x", "game_prop_through_day.x",
-  "torp_diff", "torp_recv_diff", "torp_disp_diff",
-  "torp_spoil_diff", "torp_hitout_diff", "torp.x", "torp.y",
-  "log_dist.x", "log_dist.y", "log_dist_diff",
-  "familiarity.x", "familiarity.y", "familiarity_diff",
-  "days_rest_diff_fac"
-)
-
-## Shared hyperparameters ----
-xgb_reg_params <- list(
-  objective = "reg:squarederror", eval_metric = "rmse",
-  tree_method = "hist", eta = 0.05, subsample = 0.7,
-  colsample_bytree = 0.8, max_depth = 3, min_child_weight = 15
-)
-xgb_cls_params <- list(
-  objective = "binary:logistic", eval_metric = "logloss",
-  tree_method = "hist", eta = 0.05, subsample = 0.7,
-  colsample_bytree = 0.8, max_depth = 3, min_child_weight = 15
-)
-
-## Season-grouped CV folds ----
-train_seasons <- sort(unique(xgb_df$season.x))
-cli::cli_inform("Season folds: {paste(train_seasons, collapse=', ')} ({length(train_seasons)} folds)")
-xgb_season_folds <- xgb_df$season.x
-xgb_folds <- lapply(train_seasons, function(s) which(xgb_season_folds == s))
-
-## Helper: train one XGBoost step with CV ----
-train_xgb_step <- function(df, label, weights, feature_cols, params, folds, step_name) {
-  fmat <- model.matrix(~ . - 1, data = df[, feature_cols, drop = FALSE])
-  dtrain <- xgb.DMatrix(data = fmat, label = label, weight = weights)
-
-  cli::cli_progress_step("CV for {step_name}")
-  set.seed(1234)
-  cv <- xgb.cv(params = params, data = dtrain, nrounds = 1000, folds = folds,
-                early_stopping_rounds = 30, print_every_n = 50, verbose = 1)
-
-  metric_col <- paste0("test_", params$eval_metric, "_mean")
-  best_n <- which.min(cv$evaluation_log[[metric_col]])
-  best_score <- min(cv$evaluation_log[[metric_col]])
-  cli::cli_inform("{step_name}: nrounds={best_n}, CV {params$eval_metric}={round(best_score, 4)}")
-
-  set.seed(1234)
-  model <- xgb.train(params = params, data = dtrain, nrounds = best_n, print_every_n = 50)
-  preds <- predict(model, dtrain)
-
-  list(model = model, preds = preds, best_n = best_n, cv_score = best_score)
-}
-
-## Helper: predict on new data ----
-predict_xgb_new <- function(model, df, feature_cols) {
-  mat <- model.matrix(~ . - 1, data = df[, feature_cols, drop = FALSE])
-  predict(model, xgb.DMatrix(data = mat))
-}
-
-## Step 1-5: Sequential XGBoost pipeline ----
-step1 <- train_xgb_step(xgb_df, xgb_df$total_xpoints_adj, xgb_df$weightz,
-                          xgb_base_cols, xgb_reg_params, xgb_folds, "Step 1: total_xpoints")
-xgb_df$xgb_pred_tot_xscore   <- step1$preds
-xgb_test$xgb_pred_tot_xscore <- predict_xgb_new(step1$model, xgb_test, xgb_base_cols)
-
-step2_cols <- c(xgb_base_cols, "xgb_pred_tot_xscore")
-step2 <- train_xgb_step(xgb_df, xgb_df$xscore_diff, xgb_df$weightz,
-                          step2_cols, xgb_reg_params, xgb_folds, "Step 2: xscore_diff")
-xgb_df$xgb_pred_xscore_diff   <- step2$preds
-xgb_test$xgb_pred_xscore_diff <- predict_xgb_new(step2$model, xgb_test, step2_cols)
-
-step3_cols <- c(xgb_base_cols, "xgb_pred_tot_xscore", "xgb_pred_xscore_diff")
-step3 <- train_xgb_step(xgb_df, xgb_df$shot_conv_diff, xgb_df$shot_weightz,
-                          step3_cols, xgb_reg_params, xgb_folds, "Step 3: conv_diff")
-xgb_df$xgb_pred_conv_diff   <- step3$preds
-xgb_test$xgb_pred_conv_diff <- predict_xgb_new(step3$model, xgb_test, step3_cols)
-
-step4_cols <- c(xgb_base_cols, "xgb_pred_xscore_diff", "xgb_pred_conv_diff", "xgb_pred_tot_xscore")
-step4 <- train_xgb_step(xgb_df, xgb_df$score_diff, xgb_df$weightz,
-                          step4_cols, xgb_reg_params, xgb_folds, "Step 4: score_diff")
-xgb_df$xgb_pred_score_diff   <- step4$preds
-xgb_test$xgb_pred_score_diff <- predict_xgb_new(step4$model, xgb_test, step4_cols)
-
-step5_cols <- c(xgb_base_cols, "xgb_pred_tot_xscore", "xgb_pred_score_diff")
-step5 <- train_xgb_step(xgb_df, as.numeric(xgb_df$win), xgb_df$weightz,
-                          step5_cols, xgb_cls_params, xgb_folds, "Step 5: win")
-xgb_df$xgb_pred_win   <- step5$preds
-xgb_test$xgb_pred_win <- predict_xgb_new(step5$model, xgb_test, step5_cols)
-
-cli::cli_alert_success("XGBoost pipeline complete (5 sequential models)")
+xgb_result <- .train_match_xgb(team_mdl_df, train_filter = train_filter)
+team_mdl_df <- xgb_result$data
 
 ## Temporal Holdout Evaluation ----
 cli::cli_h1("Temporal Holdout: Train < {HOLDOUT_SEASON}, Test >= {HOLDOUT_SEASON}")
 
-# GAM test predictions (from team_mdl_df, aligned to xgb_test rows)
+# Match-level mask for holdout test set
 xgb_test_mask <- !is.na(team_mdl_df$win) & !is.na(team_mdl_df$total_xpoints_adj) &
                  !is.na(team_mdl_df$xscore_diff) & !is.na(team_mdl_df$shot_conv_diff) &
                  !is.na(team_mdl_df$score_diff) & team_mdl_df$season.x >= HOLDOUT_SEASON
 
-gam_test_win   <- team_mdl_df$pred_win[xgb_test_mask]
-gam_test_score <- team_mdl_df$pred_score_diff[xgb_test_mask]
-test_labels     <- as.numeric(xgb_test$win)
-test_score_diff <- xgb_test$score_diff
+# Average home/away predictions per match using .format_match_preds()
+gam_holdout <- .format_match_preds(team_mdl_df |> filter(xgb_test_mask))
+
+# XGBoost: map xgb predictions into the GAM column names, then format
+xgb_holdout <- team_mdl_df |>
+  filter(xgb_test_mask) |>
+  mutate(pred_score_diff = xgb_pred_score_diff, pred_win = xgb_pred_win) |>
+  .format_match_preds()
 
 ### GAM holdout metrics ----
-gam_logloss  <- MLmetrics::LogLoss(gam_test_win, test_labels)
-gam_accuracy <- mean(round(gam_test_win) == test_labels)
-gam_brier    <- mean((gam_test_win - test_labels)^2)
-gam_mae      <- mean(abs(gam_test_score - test_score_diff))
-gam_rmse     <- sqrt(mean((gam_test_score - test_score_diff)^2))
+# .format_match_preds() outputs: pred_margin, pred_win, margin (home perspective)
+gam_win <- ifelse(gam_holdout$margin > 0, 1, ifelse(gam_holdout$margin == 0, 0.5, 0))
+gam_logloss  <- MLmetrics::LogLoss(gam_holdout$pred_win, gam_win)
+gam_accuracy <- mean(round(gam_holdout$pred_win) == gam_win)
+gam_brier    <- mean((gam_holdout$pred_win - gam_win)^2)
+gam_mae      <- mean(abs(gam_holdout$pred_margin - gam_holdout$margin))
+gam_rmse     <- sqrt(mean((gam_holdout$pred_margin - gam_holdout$margin)^2))
 
 ### XGBoost holdout metrics ----
-xgb_logloss  <- MLmetrics::LogLoss(xgb_test$xgb_pred_win, test_labels)
-xgb_accuracy <- mean(round(xgb_test$xgb_pred_win) == test_labels)
-xgb_brier    <- mean((xgb_test$xgb_pred_win - test_labels)^2)
-xgb_mae      <- mean(abs(xgb_test$xgb_pred_score_diff - test_score_diff))
-xgb_rmse     <- sqrt(mean((xgb_test$xgb_pred_score_diff - test_score_diff)^2))
+xgb_win <- ifelse(xgb_holdout$margin > 0, 1, ifelse(xgb_holdout$margin == 0, 0.5, 0))
+xgb_logloss  <- MLmetrics::LogLoss(xgb_holdout$pred_win, xgb_win)
+xgb_accuracy <- mean(round(xgb_holdout$pred_win) == xgb_win)
+xgb_brier    <- mean((xgb_holdout$pred_win - xgb_win)^2)
+xgb_mae      <- mean(abs(xgb_holdout$pred_margin - xgb_holdout$margin))
+xgb_rmse     <- sqrt(mean((xgb_holdout$pred_margin - xgb_holdout$margin)^2))
 
-### GAM vs XGBoost comparison ----
+### 50/50 Blend holdout metrics ----
+blend_pred_win    <- 0.5 * gam_holdout$pred_win + 0.5 * xgb_holdout$pred_win
+blend_pred_margin <- 0.5 * gam_holdout$pred_margin + 0.5 * xgb_holdout$pred_margin
+blend_logloss  <- MLmetrics::LogLoss(blend_pred_win, gam_win)
+blend_accuracy <- mean(round(blend_pred_win) == gam_win)
+blend_brier    <- mean((blend_pred_win - gam_win)^2)
+blend_mae      <- mean(abs(blend_pred_margin - gam_holdout$margin))
+blend_rmse     <- sqrt(mean((blend_pred_margin - gam_holdout$margin)^2))
+
+### GAM vs XGBoost vs Blend comparison ----
 comparison <- data.frame(
   Metric = c("Win LogLoss", "Win Accuracy (%)", "Win Brier", "Score Diff MAE", "Score Diff RMSE"),
   GAM = c(round(gam_logloss, 4), round(gam_accuracy * 100, 1), round(gam_brier, 4), round(gam_mae, 1), round(gam_rmse, 1)),
   XGBoost = c(round(xgb_logloss, 4), round(xgb_accuracy * 100, 1), round(xgb_brier, 4), round(xgb_mae, 1), round(xgb_rmse, 1)),
+  Blend = c(round(blend_logloss, 4), round(blend_accuracy * 100, 1), round(blend_brier, 4), round(blend_mae, 1), round(blend_rmse, 1)),
   stringsAsFactors = FALSE
 )
 
+n_holdout_matches <- nrow(gam_holdout)
 cat("\n=== Holdout Test Set Comparison ===\n")
-cat("Train:", nrow(xgb_df), "rows | Test:", nrow(xgb_test), "rows\n\n")
+n_train_matches <- nrow(team_mdl_df |> filter(!is.na(win), season.x < HOLDOUT_SEASON)) / 2
+cat("Train:", n_train_matches, "matches | Test:", n_holdout_matches, "matches\n\n")
 print(comparison, row.names = FALSE)
+
+### Calibration bins ----
+cal_breaks <- c(0, 0.3, 0.4, 0.5, 0.6, 0.7, 0.85, 1)
+cal_labels <- c("<30%", "30-40%", "40-50%", "50-60%", "60-70%", "70-85%", ">85%")
+
+cal_df <- data.frame(
+  bin = cut(gam_holdout$pred_win, breaks = cal_breaks, labels = cal_labels, include.lowest = TRUE),
+  actual = gam_win,
+  margin = gam_holdout$margin,
+  gam_prob = gam_holdout$pred_win,
+  xgb_prob = xgb_holdout$pred_win,
+  blend_prob = blend_pred_win,
+  gam_margin = gam_holdout$pred_margin,
+  xgb_margin = xgb_holdout$pred_margin,
+  blend_margin = blend_pred_margin
+)
+
+cal_table <- cal_df |>
+  dplyr::group_by(bin) |>
+  dplyr::summarise(
+    N = dplyr::n(),
+    Actual = round(mean(actual) * 100, 1),
+    GAM = round(mean(gam_prob) * 100, 1),
+    XGBoost = round(mean(xgb_prob) * 100, 1),
+    Blend = round(mean(blend_prob) * 100, 1),
+    GAM_RMSE = round(sqrt(mean((gam_margin - margin)^2)), 1),
+    XGB_RMSE = round(sqrt(mean((xgb_margin - margin)^2)), 1),
+    Blend_RMSE = round(sqrt(mean((blend_margin - margin)^2)), 1),
+    .groups = "drop"
+  )
+
+cat("\n=== Calibration Bins (mean pred % vs actual win %) ===\n")
+print(as.data.frame(cal_table), row.names = FALSE)
 
 ### XGBoost CV scores ----
 cat("\n=== XGBoost CV Scores (on train set, per step) ===\n")
-cat(sprintf("  Step 1 (total_xpoints) RMSE:    %.4f  nrounds: %d\n", step1$cv_score, step1$best_n))
-cat(sprintf("  Step 2 (xscore_diff)   RMSE:    %.4f  nrounds: %d\n", step2$cv_score, step2$best_n))
-cat(sprintf("  Step 3 (conv_diff)     RMSE:    %.4f  nrounds: %d\n", step3$cv_score, step3$best_n))
-cat(sprintf("  Step 4 (score_diff)    RMSE:    %.4f  nrounds: %d\n", step4$cv_score, step4$best_n))
-cat(sprintf("  Step 5 (win)           LogLoss: %.4f  nrounds: %d\n", step5$cv_score, step5$best_n))
+cat(sprintf("  Step 1 (total_xpoints) RMSE:    %.4f  nrounds: %d\n", xgb_result$steps$total_xpoints$cv_score, xgb_result$steps$total_xpoints$best_n))
+cat(sprintf("  Step 2 (xscore_diff)   RMSE:    %.4f  nrounds: %d\n", xgb_result$steps$xscore_diff$cv_score, xgb_result$steps$xscore_diff$best_n))
+cat(sprintf("  Step 3 (conv_diff)     RMSE:    %.4f  nrounds: %d\n", xgb_result$steps$conv_diff$cv_score, xgb_result$steps$conv_diff$best_n))
+cat(sprintf("  Step 4 (score_diff)    RMSE:    %.4f  nrounds: %d\n", xgb_result$steps$score_diff$cv_score, xgb_result$steps$score_diff$best_n))
+cat(sprintf("  Step 5 (win)           LogLoss: %.4f  nrounds: %d\n", xgb_result$steps$win$cv_score, xgb_result$steps$win$best_n))
 
 ### Feature importance ----
-importance <- xgb.importance(model = step5$model)
+importance <- xgb.importance(model = xgb_result$models$win)
 cat("\nTop 10 XGBoost Features (win step):\n")
 print(head(importance, 10))
 
 ## Squiggle Model Comparison ----
 cli::cli_h2("Squiggle Model Comparison")
 
+holdout_seasons <- sort(unique(
+  team_mdl_df$season.x[team_mdl_df$season.x >= HOLDOUT_SEASON & !is.na(team_mdl_df$win)]
+))
 squiggle_tips <- tryCatch(
-  fitzRoy::fetch_squiggle_data("tips", year = HOLDOUT_SEASON),
+  purrr::map_dfr(holdout_seasons, ~fitzRoy::fetch_squiggle_data("tips", year = .x)),
   error = function(e) { cli::cli_warn("Failed to fetch Squiggle data: {e$message}"); NULL }
 )
 
@@ -244,17 +209,15 @@ if (!is.null(squiggle_tips) && nrow(squiggle_tips) > 0) {
 
   squiggle_tips <- squiggle_tips |>
     mutate(
-      hteam_norm = fitzRoy::replace_teams(hteam),
+      hteam_norm = torp_replace_teams(hteam),
       hconfidence = as.numeric(hconfidence),
       hmargin = as.numeric(hmargin),
       round = as.integer(round)
     )
 
-  # Home-only test set (metrics are identical to full long-form)
-  home_test <- team_mdl_df |>
-    filter(xgb_test_mask, team_type == "home") |>
-    select(match_id, season = season.x, round = round_number.x,
-           home_team = team_name.x, win, score_diff)
+  # Match-level test set from .format_match_preds() — normalize team names
+  home_test <- gam_holdout |>
+    mutate(home_team = torp_replace_teams(as.character(home_team)))
 
   # Join squiggle tips to home test matches
   sq_joined <- squiggle_tips |>
@@ -262,43 +225,48 @@ if (!is.null(squiggle_tips) && nrow(squiggle_tips) > 0) {
                                   "hteam_norm" = "home_team"))
 
   n_test_matches <- nrow(home_test)
-  cli::cli_inform("Squiggle tips matched: {n_distinct(sq_joined$gameid)} of {n_test_matches} test matches")
+  n_matched <- n_distinct(sq_joined$gameid)
+  cli::cli_inform("Squiggle tips matched: {n_matched} of {n_test_matches} test matches")
+
+  # Diagnose unmatched games
+  if (n_matched < n_test_matches) {
+    matched_keys <- sq_joined |> distinct(year, round, hteam_norm)
+    unmatched <- home_test |>
+      anti_join(matched_keys, by = c("season" = "year", "round" = "round",
+                                      "home_team" = "hteam_norm"))
+    cli::cli_inform("Unmatched games ({nrow(unmatched)}):")
+    print(unmatched |> select(season, round, home_team), n = 50)
+  }
 
   # Per-source metrics (only sources that tipped all matched games)
+  # Join creates margin.x (squiggle) and margin.y (torp actual); use .y
+  sq_joined <- sq_joined |>
+    mutate(actual_margin = margin.y,
+           home_win = ifelse(actual_margin > 0, 1,
+                             ifelse(actual_margin == 0, 0.5, 0)))
+
   sq_metrics <- sq_joined |>
     group_by(sourceid, source) |>
     summarise(
       n = n(),
-      logloss  = MLmetrics::LogLoss(hconfidence / 100, as.numeric(win)),
-      accuracy = mean(round(hconfidence / 100) == as.numeric(win)) * 100,
-      brier    = mean((hconfidence / 100 - as.numeric(win))^2),
-      mae      = mean(abs(hmargin - score_diff)),
-      rmse     = sqrt(mean((hmargin - score_diff)^2)),
+      logloss  = MLmetrics::LogLoss(hconfidence / 100, home_win),
+      accuracy = mean(round(hconfidence / 100) == home_win) * 100,
+      brier    = mean((hconfidence / 100 - home_win)^2),
+      mae      = mean(abs(hmargin - actual_margin)),
+      rmse     = sqrt(mean((hmargin - actual_margin)^2)),
       .groups  = "drop"
     ) |>
     arrange(brier)
 
-  # Recompute GAM/XGB on same home-only rows for fair comparison
-  gam_home_win   <- team_mdl_df$pred_win[xgb_test_mask & team_mdl_df$team_type == "home"]
-  gam_home_score <- team_mdl_df$pred_score_diff[xgb_test_mask & team_mdl_df$team_type == "home"]
-  xgb_home       <- xgb_test |> filter(team_type == "home")
-  home_labels    <- as.numeric(home_test$win)
-  home_margins   <- home_test$score_diff
-
-  # Build unified comparison table
+  # Reuse match-level predictions from holdout section (gam_holdout, xgb_holdout)
   full_comparison <- data.frame(
-    Source = c("TORP GAM", "TORP XGBoost"),
+    Source = c("TORP GAM", "TORP XGBoost", "TORP Blend"),
     N = n_test_matches,
-    LogLoss  = c(round(MLmetrics::LogLoss(gam_home_win, home_labels), 4),
-                 round(MLmetrics::LogLoss(xgb_home$xgb_pred_win, home_labels), 4)),
-    Accuracy = c(round(mean(round(gam_home_win) == home_labels) * 100, 1),
-                 round(mean(round(xgb_home$xgb_pred_win) == home_labels) * 100, 1)),
-    Brier    = c(round(mean((gam_home_win - home_labels)^2), 4),
-                 round(mean((xgb_home$xgb_pred_win - home_labels)^2), 4)),
-    MAE      = c(round(mean(abs(gam_home_score - home_margins)), 1),
-                 round(mean(abs(xgb_home$xgb_pred_score_diff - home_margins)), 1)),
-    RMSE     = c(round(sqrt(mean((gam_home_score - home_margins)^2)), 1),
-                 round(sqrt(mean((xgb_home$xgb_pred_score_diff - home_margins)^2)), 1)),
+    LogLoss  = c(round(gam_logloss, 4), round(xgb_logloss, 4), round(blend_logloss, 4)),
+    Accuracy = c(round(gam_accuracy * 100, 1), round(xgb_accuracy * 100, 1), round(blend_accuracy * 100, 1)),
+    Brier    = c(round(gam_brier, 4), round(xgb_brier, 4), round(blend_brier, 4)),
+    MAE      = c(round(gam_mae, 1), round(xgb_mae, 2), round(blend_mae, 2)),
+    RMSE     = c(round(gam_rmse, 1), round(xgb_rmse, 2), round(blend_rmse, 2)),
     stringsAsFactors = FALSE
   )
 
@@ -313,13 +281,13 @@ if (!is.null(squiggle_tips) && nrow(squiggle_tips) > 0) {
       LogLoss  = round(sq_display$logloss[i], 4),
       Accuracy = round(sq_display$accuracy[i], 1),
       Brier    = round(sq_display$brier[i], 4),
-      MAE      = round(sq_display$mae[i], 1),
-      RMSE     = round(sq_display$rmse[i], 1),
+      MAE      = round(sq_display$mae[i], 2),
+      RMSE     = round(sq_display$rmse[i], 2),
       stringsAsFactors = FALSE
     ))
   }
 
-  full_comparison <- full_comparison[order(full_comparison$LogLoss), ]
+  full_comparison <- full_comparison[order(full_comparison$RMSE), ]
 
   cat("\n=== Full Model Comparison (sorted by Brier) ===\n")
   cat("Test matches:", n_test_matches, "| Holdout season:", HOLDOUT_SEASON, "\n\n")
@@ -343,15 +311,8 @@ cli::cli_inform("Saved GAM pipeline to {gam_path}")
 
 ## Save XGBoost pipeline (evaluation mode only) ----
 if (is.finite(HOLDOUT_SEASON)) {
-  match_xgb <- list(
-    total_xpoints = step1$model,
-    xscore_diff   = step2$model,
-    conv_diff      = step3$model,
-    score_diff     = step4$model,
-    win            = step5$model
-  )
   xgb_path <- file.path(output_dir, "match_xgb_pipeline.rds")
-  saveRDS(match_xgb, xgb_path)
+  saveRDS(xgb_result$models, xgb_path)
   cli::cli_inform("Saved XGBoost pipeline to {xgb_path}")
 }
 
@@ -381,11 +342,12 @@ tictoc::toc()
 
 # Summary ----
 cat("\n=== Final Summary ===\n")
-cat("GAM trained on:", nrow(gam_df), "rows\n")
+cat("GAM trained on:", nrow(gam_df) / 2, "matches\n")
 if (is.finite(HOLDOUT_SEASON)) {
-  cat("Holdout test:", nrow(xgb_test), "rows (season >=", HOLDOUT_SEASON, ")\n")
+  cat("Holdout test:", n_holdout_matches, "matches (season >=", HOLDOUT_SEASON, ")\n")
   cat("GAM holdout LogLoss:", round(gam_logloss, 4), "\n")
   cat("XGBoost holdout LogLoss:", round(xgb_logloss, 4), "\n")
+  cat("Blend holdout LogLoss:", round(blend_logloss, 4), "\n")
   cat("Saved: match_gams.rds + match_xgb_pipeline.rds\n")
 } else {
   cat("Production mode: all data used for training\n")
