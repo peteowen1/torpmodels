@@ -23,7 +23,7 @@ UPLOAD_TO_GITHUB <- FALSE # FALSE = save locally only, don't upload to GitHub re
 library(tidyverse)
 library(xgboost)
 library(mgcv)
-library(fitzRoy)
+# library(fitzRoy)  # only used for Squiggle comparison (optional)
 library(MLmetrics)
 library(geosphere)
 library(cli)
