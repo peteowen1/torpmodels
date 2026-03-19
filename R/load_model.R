@@ -11,7 +11,8 @@
   "wp" = "Win Probability (WP) model - predicts probability of winning from game state",
   "shot" = "Shot outcome model - ordered categorical model for shot results",
   "match_gams" = "Sequential GAM pipeline for match predictions (5 models: total_xpoints, xscore_diff, conv_diff, score_diff, win)",
-  "xgb_win" = "Legacy XGBoost match prediction model (superseded by match_gams)"
+  "xgb_win" = "Legacy XGBoost match prediction model (superseded by match_gams)",
+  "shot_player_df" = "Shot player lookup table - maps player IDs to lumped factor levels for shot model"
 )
 
 #' @noRd
@@ -343,7 +344,8 @@ normalize_model_name <- function(model_name) {
     shot_ocat_mdl = list(file = "shot_ocat_mdl.rds", tag = "core-models"),
     xgb_win = list(file = "xgb_win_model.rds", tag = "core-models"),
     xgb_win_model = list(file = "xgb_win_model.rds", tag = "core-models"),
-    match_gams = list(file = "match_gams.rds", tag = "core-models")
+    match_gams = list(file = "match_gams.rds", tag = "core-models"),
+    shot_player_df = list(file = "shot_player_df.rds", tag = "core-models")
   )
 
   return(model_map[[model_name]])
