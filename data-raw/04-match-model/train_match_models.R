@@ -49,15 +49,11 @@ if (!torp_loaded) {
 cli::cli_h1("Building Match Prediction Training Data")
 tictoc::tic("total")
 
-# Weather path: try relative paths from torpmodels
-weather_path <- file.path("..", "torp", "data-raw", "weather_data.parquet")
-if (!file.exists(weather_path)) weather_path <- file.path("..", "..", "torp", "data-raw", "weather_data.parquet")
-
 # PSR coefficient path
 psr_coef_path <- file.path("..", "torp", "data-raw", "cache-skills", "psr_v2_coefficients.csv")
 if (!file.exists(psr_coef_path)) psr_coef_path <- file.path("..", "..", "torp", "data-raw", "cache-skills", "psr_v2_coefficients.csv")
 
-team_mdl_df <- build_team_mdl_df(weather_path = weather_path, psr_coef_path = psr_coef_path)
+team_mdl_df <- build_team_mdl_df(psr_coef_path = psr_coef_path)
 
 cli::cli_inform("Seasons: {paste(sort(unique(team_mdl_df$season.x)), collapse = ', ')}")
 
