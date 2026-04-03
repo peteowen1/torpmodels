@@ -157,6 +157,7 @@ cli::cli_h1("Rolling Evaluation: {n_test_rounds} rounds, ~{n_test_matches} match
 # Rolling evaluation loop ----
 all_gam_preds <- list()
 all_xgb_preds <- list()
+all_input_blend_preds <- list()
 
 for (i in seq_len(n_test_rounds)) {
   s <- test_rounds$season[i]
@@ -195,6 +196,19 @@ for (i in seq_len(n_test_rounds)) {
   all_xgb_preds[[i]] <- xgb_data[test_mask, ] |>
     mutate(pred_score_diff = xgb_pred_score_diff, pred_win = xgb_pred_win) |>
     .format_match_preds()
+
+  # Input blend: blend intermediate outputs, derive WP from GAM model
+  ib_data <- xgb_data
+  ib_data$pred_tot_xscore <- 0.5 * ib_data$pred_tot_xscore +
+    0.5 * ib_data$xgb_pred_tot_xscore
+  ib_data$pred_xscore_diff <- 0.5 * ib_data$pred_xscore_diff +
+    0.5 * ib_data$xgb_pred_xscore_diff
+  ib_data$pred_score_diff <- 0.5 * ib_data$pred_score_diff +
+    0.5 * ib_data$xgb_pred_score_diff
+  ib_data$pred_win <- predict(
+    gam_result$models$win, newdata = ib_data, type = "response"
+  )
+  all_input_blend_preds[[i]] <- .format_match_preds(ib_data[test_mask, ])
 }
 
 cli::cli_alert_success("Rolling evaluation complete")
@@ -212,11 +226,18 @@ xgb_preds <- bind_rows(all_xgb_preds) |>
     home_team_chr = torp_replace_teams(as.character(home_team))
   )
 
-# 50/50 blend
+# Output blend (legacy): 50/50 average of final probabilities
 blend_preds <- gam_preds |>
   mutate(
     pred_win = 0.5 * gam_preds$pred_win + 0.5 * xgb_preds$pred_win,
     pred_margin = 0.5 * gam_preds$pred_margin + 0.5 * xgb_preds$pred_margin
+  )
+
+# Input blend: blend intermediate model outputs, derive WP from GAM model
+input_blend_preds <- bind_rows(all_input_blend_preds) |>
+  mutate(
+    home_win = ifelse(margin > 0, 1, ifelse(margin == 0, 0.5, 0)),
+    home_team_chr = torp_replace_teams(as.character(home_team))
   )
 
 n_oos_matches <- nrow(gam_preds)
@@ -239,15 +260,16 @@ cli::cli_h1("Rolling Out-of-Sample Results")
 gam_m <- .compute_metrics(gam_preds)
 xgb_m <- .compute_metrics(xgb_preds)
 blend_m <- .compute_metrics(blend_preds)
+ib_m <- .compute_metrics(input_blend_preds)
 
 comparison <- data.frame(
-  Model = c("GAM", "XGBoost", "Blend"),
+  Model = c("GAM", "XGBoost", "Output Blend", "Input Blend"),
   N = n_oos_matches,
-  LogLoss  = round(c(gam_m$logloss, xgb_m$logloss, blend_m$logloss), 4),
-  Accuracy = round(c(gam_m$accuracy, xgb_m$accuracy, blend_m$accuracy), 1),
-  Brier    = round(c(gam_m$brier, xgb_m$brier, blend_m$brier), 4),
-  MAE      = round(c(gam_m$mae, xgb_m$mae, blend_m$mae), 1),
-  RMSE     = round(c(gam_m$rmse, xgb_m$rmse, blend_m$rmse), 1),
+  LogLoss  = round(c(gam_m$logloss, xgb_m$logloss, blend_m$logloss, ib_m$logloss), 4),
+  Accuracy = round(c(gam_m$accuracy, xgb_m$accuracy, blend_m$accuracy, ib_m$accuracy), 1),
+  Brier    = round(c(gam_m$brier, xgb_m$brier, blend_m$brier, ib_m$brier), 4),
+  MAE      = round(c(gam_m$mae, xgb_m$mae, blend_m$mae, ib_m$mae), 1),
+  RMSE     = round(c(gam_m$rmse, xgb_m$rmse, blend_m$rmse, ib_m$rmse), 1),
   stringsAsFactors = FALSE
 )
 
@@ -273,7 +295,8 @@ print(comparison, row.names = FALSE)
 season_breakdown <- bind_rows(
   .season_metrics(gam_preds, "GAM"),
   .season_metrics(xgb_preds, "XGBoost"),
-  .season_metrics(blend_preds, "Blend")
+  .season_metrics(blend_preds, "Output Blend"),
+  .season_metrics(input_blend_preds, "Input Blend")
 ) |>
   arrange(season, Model)
 
@@ -288,9 +311,11 @@ cal_table <- gam_preds |>
   mutate(
     bin = cut(pred_win, breaks = cal_breaks, labels = cal_labels, include.lowest = TRUE),
     xgb_prob = xgb_preds$pred_win,
-    blend_prob = blend_preds$pred_win,
+    out_blend_prob = blend_preds$pred_win,
+    in_blend_prob = input_blend_preds$pred_win,
     xgb_margin = xgb_preds$pred_margin,
-    blend_margin = blend_preds$pred_margin
+    out_blend_margin = blend_preds$pred_margin,
+    in_blend_margin = input_blend_preds$pred_margin
   ) |>
   group_by(bin) |>
   summarise(
@@ -298,10 +323,12 @@ cal_table <- gam_preds |>
     Actual = round(mean(home_win) * 100, 1),
     GAM = round(mean(pred_win) * 100, 1),
     XGBoost = round(mean(xgb_prob) * 100, 1),
-    Blend = round(mean(blend_prob) * 100, 1),
+    OutBlend = round(mean(out_blend_prob) * 100, 1),
+    InBlend = round(mean(in_blend_prob) * 100, 1),
     GAM_RMSE = round(sqrt(mean((pred_margin - margin)^2)), 1),
     XGB_RMSE = round(sqrt(mean((xgb_margin - margin)^2)), 1),
-    Blend_RMSE = round(sqrt(mean((blend_margin - margin)^2)), 1),
+    OutB_RMSE = round(sqrt(mean((out_blend_margin - margin)^2)), 1),
+    InB_RMSE = round(sqrt(mean((in_blend_margin - margin)^2)), 1),
     .groups = "drop"
   )
 
@@ -350,19 +377,18 @@ if (!is.null(squiggle_tips) && nrow(squiggle_tips) > 0) {
                              ifelse(actual_margin == 0, 0.5, 0)))
 
   # Also join XGB/blend for matched games
-  xgb_matched <- xgb_preds |>
-    semi_join(sq_joined |> distinct(year, round, hteam_norm),
-              by = c("season" = "year", "round" = "round", "home_team_chr" = "hteam_norm"))
-  blend_matched <- blend_preds |>
-    semi_join(sq_joined |> distinct(year, round, hteam_norm),
-              by = c("season" = "year", "round" = "round", "home_team_chr" = "hteam_norm"))
+  sq_match_keys <- sq_joined |> distinct(year, round, hteam_norm)
+  sq_join_by <- c("season" = "year", "round" = "round", "home_team_chr" = "hteam_norm")
+
+  xgb_matched <- xgb_preds |> semi_join(sq_match_keys, by = sq_join_by)
+  blend_matched <- blend_preds |> semi_join(sq_match_keys, by = sq_join_by)
+  ib_matched <- input_blend_preds |> semi_join(sq_match_keys, by = sq_join_by)
 
   # TORP metrics on matched games only
-  gam_matched_m   <- .compute_metrics(gam_preds |>
-    semi_join(sq_joined |> distinct(year, round, hteam_norm),
-              by = c("season" = "year", "round" = "round", "home_team_chr" = "hteam_norm")))
+  gam_matched_m   <- .compute_metrics(gam_preds |> semi_join(sq_match_keys, by = sq_join_by))
   xgb_matched_m   <- .compute_metrics(xgb_matched)
   blend_matched_m <- .compute_metrics(blend_matched)
+  ib_matched_m    <- .compute_metrics(ib_matched)
 
   # Per-source squiggle metrics
   sq_metrics <- sq_joined |>
@@ -379,13 +405,13 @@ if (!is.null(squiggle_tips) && nrow(squiggle_tips) > 0) {
     arrange(brier)
 
   full_comparison <- data.frame(
-    Source   = c("TORP GAM", "TORP XGBoost", "TORP Blend"),
+    Source   = c("TORP GAM", "TORP XGBoost", "TORP Output Blend", "TORP Input Blend"),
     N        = n_matched,
-    LogLoss  = round(c(gam_matched_m$logloss, xgb_matched_m$logloss, blend_matched_m$logloss), 4),
-    Accuracy = round(c(gam_matched_m$accuracy, xgb_matched_m$accuracy, blend_matched_m$accuracy), 1),
-    Brier    = round(c(gam_matched_m$brier, xgb_matched_m$brier, blend_matched_m$brier), 4),
-    MAE      = round(c(gam_matched_m$mae, xgb_matched_m$mae, blend_matched_m$mae), 1),
-    RMSE     = round(c(gam_matched_m$rmse, xgb_matched_m$rmse, blend_matched_m$rmse), 1),
+    Accuracy = round(c(gam_matched_m$accuracy, xgb_matched_m$accuracy, blend_matched_m$accuracy, ib_matched_m$accuracy), 1),
+    LogLoss  = round(c(gam_matched_m$logloss, xgb_matched_m$logloss, blend_matched_m$logloss, ib_matched_m$logloss), 4),
+    Brier    = round(c(gam_matched_m$brier, xgb_matched_m$brier, blend_matched_m$brier, ib_matched_m$brier), 4),
+    MAE      = round(c(gam_matched_m$mae, xgb_matched_m$mae, blend_matched_m$mae, ib_matched_m$mae), 1),
+    RMSE     = round(c(gam_matched_m$rmse, xgb_matched_m$rmse, blend_matched_m$rmse, ib_matched_m$rmse), 1),
     stringsAsFactors = FALSE
   )
 
@@ -397,8 +423,8 @@ if (!is.null(squiggle_tips) && nrow(squiggle_tips) > 0) {
     full_comparison <- rbind(full_comparison, data.frame(
       Source   = sq_display$source[i],
       N        = sq_display$n[i],
-      LogLoss  = round(sq_display$logloss[i], 4),
       Accuracy = round(sq_display$accuracy[i], 2),
+      LogLoss  = round(sq_display$logloss[i], 4),
       Brier    = round(sq_display$brier[i], 4),
       MAE      = round(sq_display$mae[i], 2),
       RMSE     = round(sq_display$rmse[i], 2),
@@ -446,7 +472,8 @@ tictoc::toc()
 # Summary ----
 cat("\n=== Final Summary ===\n")
 cat("Rolling OOS evaluation:", n_oos_matches, "matches across", n_test_rounds, "rounds\n")
-cat("GAM   Brier:", round(gam_m$brier, 4), "| MAE:", round(gam_m$mae, 1), "| RMSE:", round(gam_m$rmse, 1), "\n")
-cat("XGB   Brier:", round(xgb_m$brier, 4), "| MAE:", round(xgb_m$mae, 1), "| RMSE:", round(xgb_m$rmse, 1), "\n")
-cat("Blend Brier:", round(blend_m$brier, 4), "| MAE:", round(blend_m$mae, 1), "| RMSE:", round(blend_m$rmse, 1), "\n")
+cat("GAM        Brier:", round(gam_m$brier, 4), "| MAE:", round(gam_m$mae, 1), "| RMSE:", round(gam_m$rmse, 1), "\n")
+cat("XGB        Brier:", round(xgb_m$brier, 4), "| MAE:", round(xgb_m$mae, 1), "| RMSE:", round(xgb_m$rmse, 1), "\n")
+cat("Out Blend  Brier:", round(blend_m$brier, 4), "| MAE:", round(blend_m$mae, 1), "| RMSE:", round(blend_m$rmse, 1), "\n")
+cat("In Blend   Brier:", round(ib_m$brier, 4), "| MAE:", round(ib_m$mae, 1), "| RMSE:", round(ib_m$rmse, 1), "\n")
 cat("Production GAMs saved to:", gam_path, "\n")
