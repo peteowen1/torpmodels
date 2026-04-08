@@ -178,3 +178,9 @@ piggyback::pb_upload("ep_model.rds", repo = "peteowen1/torpmodels", tag = "core-
 | **Model cache** | Local directory where downloaded RDS files are stored for fast repeated access |
 | **piggyback** | R package used to manage GitHub Release assets as a lightweight data store |
 | **Ordered categorical** | GAM model type for the shot model predicting miss/behind/goal as ordered outcomes |
+
+## See Also
+
+- `torpverse/ARCHITECTURE.md` -- Ecosystem overview and CI/CD orchestration
+- `torp/ARCHITECTURE.md` -- How torp consumes these models
+- `torpdata/ARCHITECTURE.md` -- Data distribution and blog aggregation pipeline
