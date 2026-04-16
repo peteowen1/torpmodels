@@ -130,9 +130,11 @@ graph LR
 | Stage | Directory | Script | Data Source |
 |-------|-----------|--------|-------------|
 | EP model | `data-raw/01-ep-model/` | `train_ep_model.R` | `torp::load_chains()` + `torp::clean_model_data_epv()` |
+| Live EP model | `data-raw/01-ep-model/` | `train_ep_model_live.R` | Same data, 8-feature subset → JSON for Worker |
 | WP model | `data-raw/02-wp-model/` | `train_wp_model.R` | PBP with EP predictions |
 | Shot model | `data-raw/03-shot-model/` | `train_shot_model.R` | Shot-specific PBP data |
 | Match models | `data-raw/04-match-model/` | `train_match_models.R` | `torp::build_team_mdl_df()` |
+| Live WP model | `data-raw/05-live-wp-model/` | `train_live_wp_model.R` | PBP data → GAM lookup JSON for browser |
 
 **Release Process** (manual):
 ```r
@@ -154,6 +156,8 @@ piggyback::pb_upload("ep_model.rds", repo = "peteowen1/torpmodels", tag = "core-
 | `data-raw/02-wp-model/train_wp_model_cv_ep.R` | WP with cross-validated EP | True out-of-sample evaluation |
 | `data-raw/03-shot-model/train_shot_model.R` | Shot outcome model training | `mgcv::gam()` ordered categorical |
 | `data-raw/04-match-model/train_match_models.R` | Match prediction models | 5-model sequential GAM pipeline |
+| `data-raw/01-ep-model/train_ep_model_live.R` | Live EP model training | 8-feature XGBoost → JSON tree structure for Worker inference |
+| `data-raw/05-live-wp-model/train_live_wp_model.R` | Live WP model training | GAM → JSON lookup table for browser |
 | `tests/testthat/test-load_model.R` | Test suite (166 cases) | Name normalization, cache ops, corruption recovery |
 
 ## Known Gotchas
@@ -174,3 +178,9 @@ piggyback::pb_upload("ep_model.rds", repo = "peteowen1/torpmodels", tag = "core-
 | **Model cache** | Local directory where downloaded RDS files are stored for fast repeated access |
 | **piggyback** | R package used to manage GitHub Release assets as a lightweight data store |
 | **Ordered categorical** | GAM model type for the shot model predicting miss/behind/goal as ordered outcomes |
+
+## See Also
+
+- `torpverse/ARCHITECTURE.md` -- Ecosystem overview and CI/CD orchestration
+- `torp/ARCHITECTURE.md` -- How torp consumes these models
+- `torpdata/ARCHITECTURE.md` -- Data distribution and blog aggregation pipeline
