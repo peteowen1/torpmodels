@@ -397,12 +397,9 @@ download_model_from_release <- function(file_name, release_tag, local_path, verb
     dir.create(parent_dir, recursive = TRUE)
   }
 
-  pb_error <- NULL
-  url_error <- NULL
-
-  # Try piggyback first (preferred method)
-  tryCatch({
-    # Download to temp location first
+  # Try piggyback first (preferred method); capture error message via the
+  # tryCatch return value rather than a <<- assignment.
+  pb_error <- tryCatch({
     temp_dir <- tempdir()
 
     piggyback::pb_download(
@@ -425,12 +422,12 @@ download_model_from_release <- function(file_name, release_tag, local_path, verb
       stop("piggyback reported success but no file was written")
     }
   }, error = function(e) {
-    pb_error <<- e$message
     if (verbose) cli::cli_warn("piggyback download failed: {e$message}")
+    e$message
   })
 
   # Fallback to direct URL download
-  tryCatch({
+  url_error <- tryCatch({
     url <- paste0(
       "https://github.com/", repo, "/releases/download/",
       release_tag, "/", file_name
@@ -448,15 +445,16 @@ download_model_from_release <- function(file_name, release_tag, local_path, verb
       unlink(local_path)
       stop(paste0("Downloaded file too small (", bad_size, " bytes), likely an error page"))
     }
+    NULL
   }, error = function(e) {
-    url_error <<- e$message
     cli::cli_warn("Direct download failed: {e$message}")
+    e$message
   })
 
   # Both methods failed - report both errors
   details <- character()
-  if (!is.null(pb_error)) details <- c(details, paste0("piggyback: ", pb_error))
-  if (!is.null(url_error)) details <- c(details, paste0("direct URL: ", url_error))
+  if (is.character(pb_error))  details <- c(details, paste0("piggyback: ", pb_error))
+  if (is.character(url_error)) details <- c(details, paste0("direct URL: ", url_error))
   detail_msg <- paste(details, collapse = "; ")
 
   cli::cli_abort("Failed to download {file_name} from release {release_tag}. {detail_msg}")
