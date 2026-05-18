@@ -46,9 +46,16 @@ team_mdl_df <- build_team_mdl_df()
 
 cli::cli_inform("Seasons: {paste(sort(unique(team_mdl_df$season.x)), collapse = ', ')}")
 
-# Pre-optimise XGBoost nrounds via CV on all data ----
-cli::cli_h2("Pre-optimising XGBoost nrounds (CV on all data)")
-xgb_cv_result <- .train_match_xgb(team_mdl_df)
+# Pre-optimise XGBoost nrounds via CV on PRE-test-season data only ----
+# Using the full dataset (including TEST_SEASONS) would leak: best_n would be
+# tuned with knowledge of folds that include the rounds we're about to predict
+# in the rolling loop. Restrict the CV input to seasons strictly before the
+# earliest test season so nrounds is fully out-of-sample relative to TEST_SEASONS.
+cli::cli_h2("Pre-optimising XGBoost nrounds (CV on pre-test-season data)")
+.cv_train_mask <- team_mdl_df$season.x < min(TEST_SEASONS)
+.cv_train_df   <- team_mdl_df[.cv_train_mask, ]
+cli::cli_inform("nrounds CV input: {sum(.cv_train_mask)/2} matches (seasons < {min(TEST_SEASONS)})")
+xgb_cv_result <- .train_match_xgb(.cv_train_df)
 xgb_nrounds <- vapply(xgb_cv_result$steps, function(s) s$best_n, integer(1))
 cli::cli_inform("XGBoost nrounds: {paste(names(xgb_nrounds), xgb_nrounds, sep='=', collapse=', ')}")
 
