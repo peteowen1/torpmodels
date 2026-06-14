@@ -43,7 +43,10 @@ Models cache to `tools::R_user_dir("torpmodels", "cache")/models/`. Use `force_d
 - `01-ep-model/train_ep_model_live_v2.R` - Live EP model v2 (13 features; drops `lag_goal_x`, adds `phase_of_play` + `chain_action_num`) — **current live EP export**
 - `05-live-wp-model/train_live_wp_model.R` - Live WP model (GAM → JSON lookup for browser)
 - `05-live-wp-model/train_live_wp_xgb.R` - Live WP XGBoost variant (experimental; features match Squiggle API runtime: margin, period, period_seconds, game_seconds)
+- `05-live-wp-model/train_live_wp_chain_v4.R` - **Current** chain-aware live WP export (possession-POV; writes `wp-model-chain.json`, overwrites v3). `train_live_wp_chain.R` / `_v2.R` / `_v3.R` are superseded.
 - `convert_rda_to_rds.R` - Utility to convert legacy `.rda` model files to `.rds` format
+
+**`data-raw/debug/`** holds scratch/experimental WP-comparison and calibration scripts — not part of the pipeline; ignore when tracing the training flow.
 
 **Wrapper convention (`*_run.R`):** Sibling `train_*_run.R` scripts `devtools::load_all()` the local dev torp before training — use these (not the bare `train_*.R`) when iterating on torp code to ensure model training picks up your local changes rather than the installed torp.
 
