@@ -158,7 +158,7 @@ piggyback::pb_upload("ep_model.rds", repo = "peteowen1/torpmodels", tag = "core-
 | `data-raw/04-match-model/train_match_models.R` | Match prediction models | 5-model sequential GAM pipeline |
 | `data-raw/01-ep-model/train_ep_model_live.R` | Live EP model training | 8-feature XGBoost → JSON tree structure for Worker inference |
 | `data-raw/05-live-wp-model/train_live_wp_model.R` | Live WP model training | GAM → JSON lookup table for browser |
-| `tests/testthat/test-load_model.R` | Test suite (166 cases) | Name normalization, cache ops, corruption recovery |
+| `tests/testthat/test-load_model.R` | Test suite (17 test_that blocks) | Name normalization, cache ops, corruption recovery |
 
 ## Known Gotchas
 
