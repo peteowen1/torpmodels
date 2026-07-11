@@ -138,6 +138,20 @@ graph LR
 
 ---
 
+### Provenance & Manifest
+
+**Purpose**: Make a silent overwrite (like the March→June `wp_model.rds` swap, where a CV-EP model shipped in March was silently replaced in June) detectable by inspection instead of forensics.
+
+**`torp_meta` attribute** (`R/model_meta.R`): every model trained through `train_core_models()` (and every match-GAM upload from `run_predictions_pipeline()`) is stamped via `stamp_model_meta()` before `saveRDS()`. RDS round-trips arbitrary attributes, so this survives cache downloads. Fields: `model`, `schema_version`, `trained_at`, `script`, `seasons`, `n_rows`/`n_matches`, `params` (including the derived WP `monotone_constraints`), `feature_names`, `cv_metric`, `torp_sha`/`torpmodels_sha`, package + R + xgboost versions. `load_torp_model()` prints the stamp (`describe_model_meta()`) when `verbose = TRUE`, and warns -- never hard-fails -- when a loaded model has no stamp (pre-provenance artifact or a non-canonical publish path).
+
+**`models_manifest.json`** (`R/publish.R`): a release-level ledger asset on the `core-models` tag, updated by `update_models_manifest()` after every `publish_model_group()` call. Read-modify-write: a 404 on download means "start fresh"; any other download error aborts rather than risking a clobber. Each artifact entry carries `sha256`, `size`, `uploaded_at`, and a meta subset (model/script/seasons/SHAs/`params_hash`/`cv_metric`); the previous entry moves onto that artifact's `history` (capped at 20). The manifest itself uploads *last*, so artifacts always land before the ledger claims them.
+
+**`publish_model_group()`**: atomic per model group (`.MODEL_GROUPS`: `ep`, `wp`, `shot` = `c(shot_ocat_mdl.rds, shot_player_df.rds)`, `match` = `c(match_gams.rds, match_xgb_pipeline.rds)`). Aborts before any upload if a group member is missing from the output directory -- the fix for the shot model shipping without its `shot_player_df` sidecar.
+
+**`check_manifest_sync()`**: ad hoc drift detector. Compares each release asset's `updated_at`/`size` (via `gh api`) against its manifest record; reports any asset newer/different-size than its manifest entry ("uploaded outside the canonical path") and any manifest entry with no matching asset.
+
+---
+
 ## Code References
 
 | File | Purpose | Key Symbols |
