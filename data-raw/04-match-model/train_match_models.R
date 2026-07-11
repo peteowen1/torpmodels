@@ -10,8 +10,9 @@
 # Uses shared functions from torp/R/match_model.R and match_train.R.
 
 # Parameters ----
-TEST_SEASONS <- 2025:2026  # Seasons to evaluate (rolling week-by-week)
-UPLOAD_TO_GITHUB <- FALSE
+# exists()-guarded so a caller can inject TEST_SEASONS before sourcing this
+# script (e.g. eval_squiggle_rank.R) without it being clobbered.
+if (!exists("TEST_SEASONS", inherits = FALSE)) TEST_SEASONS <- 2025:2026  # Seasons to evaluate (rolling week-by-week)
 
 # Setup ----
 library(tidyverse)
@@ -453,34 +454,15 @@ if (!is.null(squiggle_tips) && nrow(squiggle_tips) > 0) {
   print(full_comparison, row.names = FALSE)
 }
 
-# Save production models (trained on all data) ----
-cli::cli_h2("Training production models (all data)")
-gam_result_prod <- .train_match_gams(team_mdl_df)
-match_gams <- gam_result_prod$models
-
-output_dir <- file.path(getwd(), "inst", "models", "core")
-if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
-
-gam_path <- file.path(output_dir, "match_gams.rds")
-saveRDS(match_gams, gam_path)
-cli::cli_inform("Saved GAM pipeline to {gam_path}")
-
-if (UPLOAD_TO_GITHUB && requireNamespace("piggyback", quietly = TRUE)) {
-  tryCatch({
-    piggyback::pb_upload(gam_path, repo = "peteowen1/torpmodels", tag = "core-models")
-    cli::cli_alert_success("Upload complete!")
-  }, error = function(e) {
-    cli::cli_warn("Upload failed: {e$message}. Models saved locally at {gam_path}")
-  })
-}
-
 tictoc::toc()
 
 # Summary ----
+# Evaluation only -- production match GAMs have exactly one publisher,
+# torp::run_predictions_pipeline() (daily CI + rebuild Phase 9). This script
+# never saves/uploads a production match_gams.rds.
 cat("\n=== Final Summary ===\n")
 cat("Rolling OOS evaluation:", n_oos_matches, "matches across", n_test_rounds, "rounds\n")
 cat("GAM        Brier:", round(gam_m$brier, 4), "| MAE:", round(gam_m$mae, 1), "| RMSE:", round(gam_m$rmse, 1), "\n")
 cat("XGB        Brier:", round(xgb_m$brier, 4), "| MAE:", round(xgb_m$mae, 1), "| RMSE:", round(xgb_m$rmse, 1), "\n")
 cat("Out Blend  Brier:", round(blend_m$brier, 4), "| MAE:", round(blend_m$mae, 1), "| RMSE:", round(blend_m$rmse, 1), "\n")
 cat("In Blend   Brier:", round(ib_m$brier, 4), "| MAE:", round(ib_m$mae, 1), "| RMSE:", round(ib_m$rmse, 1), "\n")
-cat("Production GAMs saved to:", gam_path, "\n")
