@@ -13,6 +13,8 @@ Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.3
 Imports:
     cli (>= 3.0.0),
+    digest,
+    jsonlite,
     piggyback (>= 0.1.4)
 Suggests:
     mgcv (>= 1.8.0),

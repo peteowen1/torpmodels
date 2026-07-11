@@ -137,7 +137,7 @@ load_torp_model <- function(model_name, force_download = FALSE, verbose = TRUE) 
     if (verbose) {
       cli::cli_inform("Loading {model_name} from local cache")
     }
-    return(safe_read_rds(local_path, model_name))
+    return(.load_with_provenance(local_path, model_name, verbose))
   }
 
   # Download from GitHub release
@@ -151,7 +151,25 @@ load_torp_model <- function(model_name, force_download = FALSE, verbose = TRUE) 
     cli::cli_abort("Failed to download model: {model_name}")
   }
 
-  return(safe_read_rds(local_path, model_name))
+  return(.load_with_provenance(local_path, model_name, verbose))
+}
+
+#' Read a model RDS and report its provenance stamp
+#'
+#' Never hard-fails on a meta-less artifact -- old models predate provenance
+#' stamping and must keep loading, just with a warning.
+#' @keywords internal
+.load_with_provenance <- function(local_path, model_name, verbose) {
+  object <- safe_read_rds(local_path, model_name)
+  meta <- model_meta(object)
+  if (verbose) {
+    if (!is.null(meta)) {
+      describe_model_meta(meta)
+    } else {
+      cli::cli_warn("{model_name} has no torp_meta -- trained before provenance stamping or via a non-canonical path")
+    }
+  }
+  object
 }
 
 #' Load a Stat Model
