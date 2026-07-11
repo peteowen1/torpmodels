@@ -23,6 +23,24 @@ test_that("load_torp_model warns on meta-less artifact and prints provenance on 
   dir.create(core_dir, recursive = TRUE)
   withr::local_options(torpmodels.cache_dir = cache_dir)
 
+  # This test's cache fixtures below are hand-built, not real published
+  # artifacts, so they can never match a real models_manifest.json sha256.
+  # Mock the manifest fetch as absent (404) and prime the session-wide
+  # legacy-mode cache/warning up front, so the assertions below see only
+  # the provenance-layer warning/message they're actually testing, not the
+  # (real, network-hitting) manifest-freshness check or its own warning.
+  reset_tm_manifest_state <- function() {
+    rm(list = ls(envir = torpmodels:::.tm_manifest_state, all.names = TRUE),
+       envir = torpmodels:::.tm_manifest_state)
+  }
+  reset_tm_manifest_state()
+  withr::defer(reset_tm_manifest_state())
+  testthat::local_mocked_bindings(
+    pb_download = function(...) stop("404 Not Found"),
+    .package = "piggyback"
+  )
+  suppressWarnings(torpmodels:::.get_models_manifest(get_torpmodels_repo(), "core-models"))
+
   # Unstamped artifact (pre-provenance model) -- must warn but still load
   saveRDS(list(dummy = TRUE), file.path(core_dir, "ep_model.rds"))
   expect_warning(

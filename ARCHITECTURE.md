@@ -102,13 +102,13 @@ Individual player statistic projection models loaded via `load_stat_model()`:
 ```
 
 **Download Pipeline**:
-1. Check local cache
-2. If miss: try `piggyback::pb_download()` (preferred)
+1. Check local cache; if present, validate against `models_manifest.json` (sha256 sidecar via `vb_cache_validate()`, fetched at most once per tag per 15-minute session window) when the tag's manifest tracks this file -- no manifest on the tag at all (e.g. `stat-models`, as of this writing) or no entry for this file falls back to existence-only legacy behaviour, plus one session-wide warning
+2. On a cache miss or a stale cache: try `piggyback::pb_download()` (preferred)
 3. Fallback: direct GitHub URL `https://github.com/peteowen1/torpmodels/releases/download/{tag}/{file}`
-4. Validate file size > 1000 bytes (detect error pages)
-5. Cache locally for future loads
+4. Verify sha256 against the manifest entry when available; otherwise fall back to the legacy file-size > 1000 bytes heuristic (detects error pages)
+5. Atomic move into the cache path (tempfile beside the destination, then rename) with a `.sha256` sidecar written alongside; a failed integrity check deletes the temp and retries the same method once before falling through to the next method, and never touches a pre-existing cached file
 
-**Error Handling**: `safe_read_rds()` detects RDS corruption ("unknown input format", "decompression" errors), auto-deletes corrupted files to force re-download, but preserves cache on environment errors (missing packages, OOM).
+**Error Handling**: `safe_read_rds()` detects RDS corruption ("unknown input format", "decompression" errors), auto-deletes the corrupted file *and* its `.sha256` sidecar to force a clean re-download, but preserves cache on environment errors (missing packages, OOM).
 
 ---
 

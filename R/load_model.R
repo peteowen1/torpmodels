@@ -97,6 +97,73 @@ get_models_dir <- function() {
   return(models_dir)
 }
 
+# Manifest-verified cache freshness (ECOSYSTEM-FIX-PLAN.md M3/M4)
+# -----------------------------------------------------------------
+# torpmodels' commit record is models_manifest.json (R/publish.R), NOT
+# versebus's generic bus_manifest.json -- same sha256-per-artifact idea, a
+# different asset name/schema (`artifacts` keyed by file name, not `assets`
+# keyed by a `name` field). `.get_models_manifest()` fetches it via
+# publish.R's `.fetch_manifest()` (404 -> NULL means legacy mode), rate
+# limited to one fetch per (repo, tag) per session per 15-minute window.
+# `.fetch_manifest()` aborts on transient errors when called from its
+# original producer path (never risk clobbering the ledger) -- here, as a
+# read-only cache-freshness check, that would wrongly hard-fail a load that
+# could otherwise succeed from a perfectly good local cache, so the abort is
+# caught and degraded to "couldn't verify this session" instead. A tag with
+# no manifest at all (stat-models, as of this writing) keeps exactly the
+# pre-M3 existence-only cache behaviour, plus one cli_warn for the whole
+# session -- never a hard failure.
+
+#' @noRd
+.tm_manifest_state <- new.env(parent = emptyenv())
+
+#' @noRd
+.tm_manifest_ttl_secs <- 900L
+
+#' Session-cached, rate-limited fetch of a tag's models_manifest.json
+#' @keywords internal
+.get_models_manifest <- function(repo, tag, verbose = TRUE) {
+  key <- paste0(repo, "@", tag)
+  cached <- .tm_manifest_state[[key]]
+  if (!is.null(cached) &&
+      as.numeric(Sys.time() - cached$fetched_at, units = "secs") < .tm_manifest_ttl_secs) {
+    return(cached$manifest)
+  }
+
+  manifest <- tryCatch(
+    .fetch_manifest(repo, tag),
+    error = function(e) {
+      if (verbose) {
+        cli::cli_warn("Could not fetch models_manifest.json for {.val {tag}} ({conditionMessage(e)}) -- skipping cache verification this session")
+      }
+      NULL
+    }
+  )
+  .tm_manifest_state[[key]] <- list(manifest = manifest, fetched_at = Sys.time())
+
+  if (is.null(manifest) && verbose && !isTRUE(.tm_manifest_state$.legacy_warned)) {
+    cli::cli_warn("{.val {tag}} on {.val {repo}} has no models_manifest.json -- running unverified (legacy mode)")
+    .tm_manifest_state$.legacy_warned <- TRUE
+  }
+
+  manifest
+}
+
+#' Is a locally cached model file still valid against models_manifest.json?
+#'
+#' TRUE (serve from cache) when there's no manifest to check against (legacy
+#' mode) or no entry for this specific file (an untracked artifact -- can't
+#' validate it, so don't punish it); otherwise delegates to versebus's
+#' sidecar-based `vb_cache_validate()`.
+#' @keywords internal
+.tm_cache_is_fresh <- function(repo, tag, file_name, local_path, verbose = TRUE) {
+  manifest <- .get_models_manifest(repo, tag, verbose)
+  if (is.null(manifest) || is.null(manifest$artifacts)) return(TRUE)
+  entry <- manifest$artifacts[[file_name]]
+  if (is.null(entry) || is.null(entry$sha256)) return(TRUE)
+  vb_cache_validate(local_path, entry)
+}
+
 #' Load a TORP Model
 #'
 #' Loads a pre-trained model from local cache or downloads from GitHub releases.
@@ -129,15 +196,21 @@ load_torp_model <- function(model_name, force_download = FALSE, verbose = TRUE) 
 
   model_file <- model_info$file
   release_tag <- model_info$tag
+  repo <- get_torpmodels_repo()
 
   # Check local cache first
   local_path <- file.path(get_models_dir(), "core", model_file)
 
   if (file.exists(local_path) && !force_download) {
-    if (verbose) {
-      cli::cli_inform("Loading {model_name} from local cache")
+    if (.tm_cache_is_fresh(repo, release_tag, model_file, local_path, verbose)) {
+      if (verbose) {
+        cli::cli_inform("Loading {model_name} from local cache")
+      }
+      return(.load_with_provenance(local_path, model_name, verbose))
     }
-    return(.load_with_provenance(local_path, model_name, verbose))
+    if (verbose) {
+      cli::cli_inform("Cached {model_name} does not match models_manifest.json -- re-downloading")
+    }
   }
 
   # Download from GitHub release
@@ -201,15 +274,21 @@ load_stat_model <- function(stat_name, force_download = FALSE, verbose = TRUE) {
 
   model_file <- paste0(stat_name, ".rds")
   release_tag <- "stat-models"
+  repo <- get_torpmodels_repo()
 
   # Check local cache first
   local_path <- file.path(get_models_dir(), "stat-models", model_file)
 
   if (file.exists(local_path) && !force_download) {
-    if (verbose) {
-      cli::cli_inform("Loading stat model '{stat_name}' from local cache")
+    if (.tm_cache_is_fresh(repo, release_tag, model_file, local_path, verbose)) {
+      if (verbose) {
+        cli::cli_inform("Loading stat model '{stat_name}' from local cache")
+      }
+      return(safe_read_rds(local_path, stat_name))
     }
-    return(safe_read_rds(local_path, stat_name))
+    if (verbose) {
+      cli::cli_inform("Cached stat model '{stat_name}' does not match models_manifest.json -- re-downloading")
+    }
   }
 
   # Download from GitHub release
@@ -393,6 +472,7 @@ safe_read_rds <- function(path, label = basename(path)) {
       )
       if (is_corruption) {
         unlink(path)
+        unlink(paste0(path, ".sha256"))
         cli::cli_abort(
           "Model file for {label} is corrupted: {msg}. Cache cleared, try again."
         )
@@ -405,9 +485,19 @@ safe_read_rds <- function(path, label = basename(path)) {
 }
 
 #' Download model from GitHub release
+#'
+#' Verifies sha256 against `models_manifest.json` when the tag's manifest
+#' tracks this file -- replacing the old `file.size > 1000` heuristic, which
+#' is now only a last-resort fallback for tags with no manifest yet (e.g.
+#' stat-models, as of this writing). Each download attempt lands in a
+#' tempdir beside the destination and is moved into place atomically via
+#' `vb_atomic_write()`, with a `<local_path>.sha256` sidecar written
+#' alongside on success. A failed integrity check deletes the temp and
+#' retries the SAME method once before falling through to the next method
+#' (piggyback, then a direct release URL); a pre-existing `local_path` is
+#' never touched by a failed download.
 #' @keywords internal
 #' @importFrom cli cli_inform cli_warn cli_abort
-#' @importFrom utils download.file
 download_model_from_release <- function(file_name, release_tag, local_path, verbose = TRUE) {
   repo <- get_torpmodels_repo()
 
@@ -417,65 +507,98 @@ download_model_from_release <- function(file_name, release_tag, local_path, verb
     dir.create(parent_dir, recursive = TRUE)
   }
 
-  # Try piggyback first (preferred method); capture error message via the
-  # tryCatch return value rather than a <<- assignment.
-  pb_error <- tryCatch({
-    temp_dir <- tempdir()
+  manifest <- .get_models_manifest(repo, release_tag, verbose)
+  entry <- if (!is.null(manifest) && !is.null(manifest$artifacts)) manifest$artifacts[[file_name]] else NULL
 
-    piggyback::pb_download(
-      file = file_name,
-      repo = repo,
-      tag = release_tag,
-      dest = temp_dir
-    )
+  # One fetch+verify+place attempt. `fetch_fn(tmpdir)` must leave `file_name`
+  # inside `tmpdir`; raises a vb_error_integrity (via .vb_abort(), vendored
+  # in versebus.R) on a corrupt/undersized/mismatched download, otherwise
+  # propagates whatever error the download call itself raised (network,
+  # 404, ...).
+  attempt <- function(fetch_fn) {
+    tmpdir <- tempfile(".tm_dl_", tmpdir = parent_dir)
+    dir.create(tmpdir)
+    on.exit(unlink(tmpdir, recursive = TRUE), add = TRUE)
 
-    temp_path <- file.path(temp_dir, file_name)
-    if (file.exists(temp_path) && file.size(temp_path) > 1000) {
-      file.copy(temp_path, local_path, overwrite = TRUE)
-      unlink(temp_path)
-      if (verbose) cli::cli_inform("Successfully downloaded {file_name}")
-      return(invisible(TRUE))
-    } else if (file.exists(temp_path)) {
-      unlink(temp_path)
-      stop("Downloaded file is too small (likely an error page)")
-    } else {
-      stop("piggyback reported success but no file was written")
+    fetch_fn(tmpdir)
+
+    tmp <- file.path(tmpdir, file_name)
+    if (!file.exists(tmp) || file.size(tmp) == 0L) {
+      .vb_abort("{file_name}: download produced no/empty file", "vb_error_integrity")
     }
-  }, error = function(e) {
-    if (verbose) cli::cli_warn("piggyback download failed: {e$message}")
-    e$message
-  })
+    if (!is.null(entry) && !is.null(entry$sha256)) {
+      got <- vb_sha256(tmp)
+      if (!identical(got, entry$sha256)) {
+        .vb_abort(
+          "{file_name}: sha256 mismatch vs models_manifest.json (got {substr(got, 1, 12)}..., want {substr(entry$sha256, 1, 12)}...)",
+          "vb_error_integrity"
+        )
+      }
+    } else if (file.size(tmp) <= 1000L) {
+      # No manifest entry to verify against -- legacy size heuristic.
+      .vb_abort("{file_name}: downloaded file is too small (likely an error page)", "vb_error_integrity")
+    }
+
+    vb_atomic_write(function(p) file.copy(tmp, p, overwrite = TRUE), local_path)
+    writeLines(vb_sha256(local_path), paste0(local_path, ".sha256"))
+    invisible(TRUE)
+  }
+
+  with_retry <- function(fetch_fn, label) {
+    result <- tryCatch(attempt(fetch_fn), error = function(e) e)
+    if (inherits(result, "vb_error_integrity")) {
+      if (verbose) {
+        cli::cli_warn("{label} download of {file_name} failed integrity check ({conditionMessage(result)}); retrying once")
+      }
+      result <- tryCatch(attempt(fetch_fn), error = function(e) e)
+    }
+    result
+  }
+
+  # Try piggyback first (preferred method)
+  pb_result <- with_retry(function(tmpdir) {
+    piggyback::pb_download(
+      file = file_name, repo = repo, tag = release_tag,
+      dest = tmpdir, overwrite = TRUE
+    )
+  }, "piggyback")
+
+  if (!inherits(pb_result, "error")) {
+    if (verbose) cli::cli_inform("Successfully downloaded {file_name}")
+    return(invisible(TRUE))
+  }
+  if (verbose) cli::cli_warn("piggyback download failed: {conditionMessage(pb_result)}")
 
   # Fallback to direct URL download
-  url_error <- tryCatch({
+  url_result <- with_retry(function(tmpdir) {
     url <- paste0(
       "https://github.com/", repo, "/releases/download/",
       release_tag, "/", file_name
     )
-
     if (verbose) cli::cli_inform("Trying direct download from {url}")
+    # Qualified on purpose (not an unqualified `@importFrom` binding): a
+    # bare `download.file()` resolves to the copy captured in this
+    # package's namespace at load time, which testthat's
+    # `local_mocked_bindings(.package = "utils")` cannot reach -- only a
+    # live `utils::` lookup sees the mocked binding.
+    utils::download.file(url, file.path(tmpdir, file_name), mode = "wb", quiet = !verbose)
+  }, "direct URL")
 
-    download.file(url, local_path, mode = "wb", quiet = !verbose)
+  if (!inherits(url_result, "error")) {
+    if (verbose) cli::cli_inform("Successfully downloaded {file_name}")
+    return(invisible(TRUE))
+  }
 
-    if (file.exists(local_path) && file.size(local_path) > 1000) {
-      if (verbose) cli::cli_inform("Successfully downloaded {file_name}")
-      return(invisible(TRUE))
-    } else if (file.exists(local_path)) {
-      bad_size <- file.size(local_path)
-      unlink(local_path)
-      stop(paste0("Downloaded file too small (", bad_size, " bytes), likely an error page"))
-    }
-    NULL
-  }, error = function(e) {
-    cli::cli_warn("Direct download failed: {e$message}")
-    e$message
-  })
-
-  # Both methods failed - report both errors
-  details <- character()
-  if (is.character(pb_error))  details <- c(details, paste0("piggyback: ", pb_error))
-  if (is.character(url_error)) details <- c(details, paste0("direct URL: ", url_error))
-  detail_msg <- paste(details, collapse = "; ")
-
-  cli::cli_abort("Failed to download {file_name} from release {release_tag}. {detail_msg}")
+  # Both methods failed -- report both; type as vb_error_integrity if either
+  # failure was a corruption signal (never silently downgrade that to a
+  # generic network error class).
+  details <- paste0(
+    "piggyback: ", conditionMessage(pb_result), "; ",
+    "direct URL: ", conditionMessage(url_result)
+  )
+  is_integrity <- inherits(pb_result, "vb_error_integrity") || inherits(url_result, "vb_error_integrity")
+  cli::cli_abort(
+    "Failed to download {file_name} from release {release_tag}. {details}",
+    class = if (is_integrity) c("vb_error_integrity", "vb_error") else "vb_error"
+  )
 }
