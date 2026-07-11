@@ -24,7 +24,7 @@ SPLIT_AT  <- 5      # bucket boundary
 # --- Source the training script (~90s) ----
 .t0 <- Sys.time()
 .olddir <- getwd()
-.script_dir <- "C:/Users/peteo/OneDrive/Documents/torpverse/torpmodels/data-raw/04-match-model"
+.script_dir <- "C:/dev/torpverse/torpmodels/data-raw/04-match-model"
 # Prefer relative if called from script_dir
 if (file.exists("train_match_models.R")) .script_dir <- getwd()
 setwd(.script_dir)

@@ -15,7 +15,7 @@ library(data.table)
 # Load torp
 torp_path <- file.path(dirname(dirname(getwd())), "torp")
 if (!file.exists(file.path(torp_path, "DESCRIPTION"))) {
-  torp_path <- "C:/Users/peteo/OneDrive/Documents/torpverse/torp"
+  torp_path <- "C:/dev/torpverse/torp"
 }
 devtools::load_all(torp_path)
 
@@ -197,7 +197,7 @@ print(calib)
 
 # ── Step 8: Copy to inthegame-blog ──────────────────────────────────────────
 
-blog_path <- "C:/Users/peteo/OneDrive/Documents/inthegame-blog/afl/live-wp-lookup.json"
+blog_path <- "C:/dev/inthegame-blog/afl/live-wp-lookup.json"
 file.copy(json_path, blog_path, overwrite = TRUE)
 cli::cli_alert_success("Copied lookup table to {blog_path}")
 

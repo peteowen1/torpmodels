@@ -6,9 +6,9 @@ library(zoo)
 library(xgboost)
 
 # Load dev torp first
-devtools::load_all("C:/Users/peteo/OneDrive/Documents/torpverse/torp")
+devtools::load_all("C:/dev/torpverse/torp")
 
-setwd("C:/Users/peteo/OneDrive/Documents/torpverse/torpmodels")
+setwd("C:/dev/torpverse/torpmodels")
 
 # --- Training steps (inlined from train_wp_model.R) ---
 

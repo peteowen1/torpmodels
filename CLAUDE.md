@@ -6,15 +6,6 @@ This file provides guidance to Claude Code when working in the torpmodels packag
 
 **torpmodels** provides pre-trained ML models for AFL analytics, served via GitHub releases with local caching. It has two exported model loaders and no data processing logic.
 
-## Development Commands
-
-```r
-devtools::load_all()       # Load package
-devtools::test()           # Run tests
-devtools::check()          # R CMD check
-devtools::document()       # Generate docs
-```
-
 ## Architecture
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for full documentation, Mermaid diagrams, and model catalog.

@@ -155,7 +155,7 @@ match_dt[, ep_v2 := round(score_ep(model_v2, mX_v2), 3)]
 
 # Also score with full 19-feature model for reference
 full_model <- readRDS(file.path(
-  normalizePath("~/OneDrive/Documents/torpverse/torpmodels/inst/models/core"),
+  normalizePath("C:/dev/torpverse/torpmodels/inst/models/core"),
   "ep_model.rds"))
 full_vars <- select_epv_model_vars(match_dt)
 mX_full <- model.matrix(~ . + 0, data = full_vars)

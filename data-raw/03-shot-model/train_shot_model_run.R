@@ -4,7 +4,7 @@
 library(mgcv)
 
 # Load dev torp first
-devtools::load_all("C:/Users/peteo/OneDrive/Documents/torpverse/torp")
+devtools::load_all("C:/dev/torpverse/torp")
 
-setwd("C:/Users/peteo/OneDrive/Documents/torpverse/torpmodels")
+setwd("C:/dev/torpverse/torpmodels")
 source("data-raw/03-shot-model/train_shot_model.R")
