@@ -11,10 +11,9 @@ torpmodels has no data processing logic and no runtime dependency on torp. The r
 ```mermaid
 graph TB
     subgraph Training["Model Training (data-raw/)"]
-        EP_TRAIN["01-ep-model/<br/>train_ep_model.R"]
-        WP_TRAIN["02-wp-model/<br/>train_wp_model.R"]
-        SHOT_TRAIN["03-shot-model/<br/>train_shot_model.R"]
-        MATCH_TRAIN["04-match-model/<br/>train_match_models.R"]
+        TRAIN_CLI["train_models.R<br/>(ep, wp, shot)"]
+        TRAIN_LIB["lib/train_lib.R<br/>fit_ep/fit_wp/fit_shot"]
+        MATCH_TRAIN["run_predictions_pipeline()<br/>(torp, sole match-GAM publisher)"]
     end
 
     subgraph GH["GitHub Releases"]
@@ -33,9 +32,8 @@ graph TB
         PREDICT["Match predictions<br/>(run_predictions_pipeline)"]
     end
 
-    EP_TRAIN --> CORE
-    WP_TRAIN --> CORE
-    SHOT_TRAIN --> CORE
+    TRAIN_CLI --> TRAIN_LIB
+    TRAIN_LIB --> CORE
     MATCH_TRAIN --> CORE
 
     CORE --> LOAD
@@ -118,7 +116,7 @@ Individual player statistic projection models loaded via `load_stat_model()`:
 
 **Purpose**: Train all production models. Lives in `data-raw/` and is not part of the installed package.
 
-**Training Order** (EP must be first -- WP uses EP predictions as features):
+**Training Order** (EP must be first -- WP uses EP predictions as features; `train_core_models()` in `lib/train_lib.R` enforces this):
 
 ```mermaid
 graph LR
@@ -129,17 +127,12 @@ graph LR
 
 | Stage | Directory | Script | Data Source |
 |-------|-----------|--------|-------------|
-| EP model | `data-raw/01-ep-model/` | `train_ep_model.R` | `torp::load_chains()` + `torp::clean_model_data_epv()` |
-| Live EP model | `data-raw/01-ep-model/` | `train_ep_model_live.R` | Same data, 8-feature subset → JSON for Worker |
-| WP model | `data-raw/02-wp-model/` | `train_wp_model.R` | PBP with EP predictions |
-| Shot model | `data-raw/03-shot-model/` | `train_shot_model.R` | Shot-specific PBP data |
-| Match models | `data-raw/04-match-model/` | `train_match_models.R` | `torp::build_team_mdl_df()` |
-| Live WP model | `data-raw/05-live-wp-model/` | `train_live_wp_model.R` | PBP data → GAM lookup JSON for browser |
+| EP / WP / shot models | `data-raw/` | `train_models.R` (CLI) → `lib/train_lib.R` (`fit_ep`/`fit_wp`/`fit_shot`) | `torp::load_chains()` + `torp:::clean_model_data_epv()`; shot uses `torp::load_pbp()` |
+| Live EP model | `data-raw/01-ep-model/` | `train_ep_model_live_v2.R` | Same PBP data, 13-feature subset → JSON for Worker |
+| Match models | `data-raw/04-match-model/` | `train_match_models.R` (eval only) + `torp::run_predictions_pipeline()` (sole publisher) | `torp::build_team_mdl_df()` |
+| Live WP model | `data-raw/05-live-wp-model/` | `train_live_wp_chain_v4.R` / `train_live_wp_model.R` | PBP data → GAM lookup JSON for browser |
 
-**Release Process** (manual):
-```r
-piggyback::pb_upload("ep_model.rds", repo = "peteowen1/torpmodels", tag = "core-models")
-```
+**Release Process**: `train_models.R` calls `publish_model_group()` internally (atomic per model group, updates `models_manifest.json`). Manual/ad-hoc uploads should still go through `publish_model_group()` rather than a bare `piggyback::pb_upload()`, so the manifest ledger stays accurate.
 
 **Important**: The `match_gams.rds` in GitHub Releases is an evaluation reference model. Production match predictions are retrained daily via `torp/data-raw/02-models/build_match_predictions.R`.
 
@@ -150,15 +143,16 @@ piggyback::pb_upload("ep_model.rds", repo = "peteowen1/torpmodels", tag = "core-
 | File | Purpose | Key Symbols |
 |------|---------|-------------|
 | `R/load_model.R` | All model loading, caching, and management | `load_torp_model()`, `load_stat_model()`, `list_available_models()`, `check_model_cache()`, `clear_model_cache()` |
+| `R/model_meta.R` | Provenance metadata | `build_model_meta()`, `stamp_model_meta()`, `model_meta()`, `describe_model_meta()` |
+| `R/publish.R` | Atomic publish + manifest ledger | `publish_model_group()`, `update_models_manifest()`, `check_manifest_sync()` |
 | `R/torpmodels-package.R` | Package-level documentation | (roxygen2 docs only) |
-| `data-raw/01-ep-model/train_ep_model.R` | EP model training | XGBoost multiclass (5 EP outcome classes) |
-| `data-raw/02-wp-model/train_wp_model.R` | WP model training | XGBoost binary logistic |
-| `data-raw/02-wp-model/train_wp_model_cv_ep.R` | WP with cross-validated EP | True out-of-sample evaluation |
-| `data-raw/03-shot-model/train_shot_model.R` | Shot outcome model training | `mgcv::gam()` ordered categorical |
-| `data-raw/04-match-model/train_match_models.R` | Match prediction models | 5-model sequential GAM pipeline |
-| `data-raw/01-ep-model/train_ep_model_live.R` | Live EP model training | 8-feature XGBoost → JSON tree structure for Worker inference |
-| `data-raw/05-live-wp-model/train_live_wp_model.R` | Live WP model training | GAM → JSON lookup table for browser |
+| `data-raw/train_models.R` | THE canonical EP/WP/shot training CLI | Arg parsing, `devtools::load_all()` of dev torp + torpmodels, delegates to `lib/train_lib.R` |
+| `data-raw/lib/train_lib.R` | Fitting functions shared by `train_models.R` and rebuild Phase 4 | `fit_ep()`, `fit_wp()`, `fit_shot()`, `train_core_models()`, `wp_params()` (derives `monotone_constraints` from `torp:::WP_MODEL_FEATURES`) |
+| `data-raw/02-wp-model/validate_cv_ep_wp.R` | Compares in-sample vs CV-EP WP training | Sources `lib/train_lib.R` for shared plumbing |
+| `data-raw/04-match-model/train_match_models.R` | Rolling out-of-sample match-model evaluation | 5-model sequential GAM pipeline, evaluation only (no production save) |
 | `tests/testthat/test-load_model.R` | Test suite (17 test_that blocks) | Name normalization, cache ops, corruption recovery |
+| `tests/testthat/test-model_meta.R` | Provenance stamping/round-trip tests | `build_model_meta()`, `stamp_model_meta()`, `load_torp_model()` warn/describe behavior |
+| `tests/testthat/test-publish.R` | Atomic publish/manifest tests | F3 (partial group) regression, manifest 404-vs-transient handling |
 
 ## Known Gotchas
 
@@ -166,8 +160,8 @@ piggyback::pb_upload("ep_model.rds", repo = "peteowen1/torpmodels", tag = "core-
 |-------|--------|----------|
 | XGBoost version incompatibility | RDS models may fail to load across XGBoost versions | `load_torp_model("ep", force_download = TRUE)` |
 | Shot model requires mgcv loaded | `predict()` fails without `library(mgcv)` (internal `Xbd` function) | Always `library(mgcv)` before shot predictions |
-| WP trained on in-sample EP | WP cross-validation metrics ~1-2% optimistic | Use `train_wp_model_cv_ep.R` for true OOS eval |
-| match_gams.rds is evaluation-only | Not the production model (production retrained daily) | Production uses `torp::run_predictions_pipeline()` |
+| WP trained on in-sample EP | Metrics ~1-2% optimistic vs true OOS | `train_models.R` defaults to CV-EP (`wp_ep_source = "cv"`); `--insample-ep` is legacy comparison only and never uploads |
+| match_gams.rds is evaluation-only | Not the production model (production retrained daily) | Production uses `torp::run_predictions_pipeline()` (sole match-GAM publisher) |
 
 ## Glossary
 

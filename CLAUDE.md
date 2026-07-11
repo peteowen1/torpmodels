@@ -22,14 +22,19 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for full documentation, Mermaid diagrams,
 Models cache to `tools::R_user_dir("torpmodels", "cache")/models/`. Use `force_download = TRUE` to bypass cache.
 
 ### Model Training Scripts (`data-raw/`)
-- `01-ep-model/train_ep_model.R` - Expected Points (XGBoost, train first)
-- `01-ep-model/train_ep_model_run.R` - Wrapper that `load_all`s dev torp before training (use via `Rscript` for CI/batch)
-- `02-wp-model/train_wp_model.R` - Win Probability (XGBoost, depends on EP)
-- `02-wp-model/train_wp_model_run.R` - Wrapper that `load_all`s dev torp before training
-- `02-wp-model/train_wp_model_cv_ep.R` - WP training with cross-validated EP predictions (reduces target leakage; implemented 2026-03-26)
-- `03-shot-model/train_shot_model.R` - Shot outcome (GAM via mgcv::bam)
-- `03-shot-model/train_shot_model_run.R` - Wrapper that `load_all`s dev torp before training
-- `04-match-model/train_match_models.R` - Match prediction (self-contained: builds team_mdl_df, trains 5 sequential GAMs, saves `match_gams.rds`). Set `HOLDOUT_SEASON` to a finite year for XGBoost comparison.
+
+**`data-raw/train_models.R` is THE canonical entry point for EP/WP/shot training** — replaces the old standalone `train_ep_model*.R` / `train_wp_model*.R` / `train_shot_model*.R` scripts (deleted; git history retains them). Run from the torpmodels root:
+```
+Rscript data-raw/train_models.R ep wp shot                 # canonical full retrain + upload
+Rscript data-raw/train_models.R wp --no-upload              # local-only
+Rscript data-raw/train_models.R ep wp --seasons 2021 2024   # explicit window
+Rscript data-raw/train_models.R wp --insample-ep            # legacy comparison; never uploads
+```
+It `devtools::load_all()`s dev torp (and dev torpmodels) itself — no separate `*_run.R` wrapper needed. Every model it saves carries a `torp_meta` provenance stamp (see `R/model_meta.R`) and publishes atomically via `publish_model_group()` (see `R/publish.R`), so a shot model can never upload without its `shot_player_df` sidecar, and a silent overwrite is detectable via `check_manifest_sync()`.
+
+- `data-raw/lib/train_lib.R` - The fitting functions (`fit_ep()`, `fit_wp()`, `fit_shot()`, `train_core_models()` orchestrator, etc). No side effects at source time — both `train_models.R` and `torp/data-raw/rebuild_everything.R` Phase 4 source it. WP's `monotone_constraints` are *derived* from `torp:::WP_MODEL_FEATURES`/`WP_MONOTONE_INCREASING`, never hand-inlined (this is the fix for the 15-vs-18-entry constraint bug that shipped in production).
+- `02-wp-model/validate_cv_ep_wp.R` - Compares WP trained with in-sample vs cross-validated EP predictions (sources `lib/train_lib.R` for the shared data/fold/CV plumbing); quantifies the CV-EP improvement.
+- `04-match-model/train_match_models.R` - Rolling week-by-week out-of-sample evaluation (GAM/XGBoost/blends vs Squiggle). Set `TEST_SEASONS` to a finite range for the eval window.
 - `01-ep-model/train_ep_model_live.R` - Live EP model v1 (8-feature XGBoost → JSON for Cloudflare Worker) — **superseded by v2**
 - `01-ep-model/train_ep_model_live_v2.R` - Live EP model v2 (13 features; drops `lag_goal_x`, adds `phase_of_play` + `chain_action_num`) — **current live EP export**
 - `05-live-wp-model/train_live_wp_model.R` - Live WP model (GAM → JSON lookup for browser)
@@ -39,9 +44,7 @@ Models cache to `tools::R_user_dir("torpmodels", "cache")/models/`. Use `force_d
 
 **`data-raw/debug/`** holds scratch/experimental WP-comparison and calibration scripts — not part of the pipeline; ignore when tracing the training flow.
 
-**Wrapper convention (`*_run.R`):** Sibling `train_*_run.R` scripts `devtools::load_all()` the local dev torp before training — use these (not the bare `train_*.R`) when iterating on torp code to ensure model training picks up your local changes rather than the installed torp.
-
-**Training order matters:** EP must be trained before WP (WP uses EP predictions as features).
+**Training order matters:** EP must be trained before WP (WP uses EP predictions as features) — `train_core_models()` enforces this automatically.
 
 ### Live Model Export
 Live models are exported as JSON for browser/Worker inference on inthegame-blog:
