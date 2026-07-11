@@ -35,12 +35,12 @@ It `devtools::load_all()`s dev torp (and dev torpmodels) itself — no separate 
 - `data-raw/lib/train_lib.R` - The fitting functions (`fit_ep()`, `fit_wp()`, `fit_shot()`, `train_core_models()` orchestrator, etc). No side effects at source time — both `train_models.R` and `torp/data-raw/rebuild_everything.R` Phase 4 source it. WP's `monotone_constraints` are *derived* from `torp:::WP_MODEL_FEATURES`/`WP_MONOTONE_INCREASING`, never hand-inlined (this is the fix for the 15-vs-18-entry constraint bug that shipped in production).
 - `02-wp-model/validate_cv_ep_wp.R` - Compares WP trained with in-sample vs cross-validated EP predictions (sources `lib/train_lib.R` for the shared data/fold/CV plumbing); quantifies the CV-EP improvement.
 - `04-match-model/train_match_models.R` - Rolling week-by-week out-of-sample evaluation (GAM/XGBoost/blends vs Squiggle). Set `TEST_SEASONS` to a finite range for the eval window.
-- `01-ep-model/train_ep_model_live.R` - Live EP model v1 (8-feature XGBoost → JSON for Cloudflare Worker) — **superseded by v2**
-- `01-ep-model/train_ep_model_live_v2.R` - Live EP model v2 (13 features; drops `lag_goal_x`, adds `phase_of_play` + `chain_action_num`) — **current live EP export**
-- `05-live-wp-model/train_live_wp_model.R` - Live WP model (GAM → JSON lookup for browser)
-- `05-live-wp-model/train_live_wp_xgb.R` - Live WP XGBoost variant (experimental; features match Squiggle API runtime: margin, period, period_seconds, game_seconds)
-- `05-live-wp-model/train_live_wp_chain_v4.R` - **Current** chain-aware live WP export (possession-POV; writes `wp-model-chain.json`, overwrites v3). `train_live_wp_chain.R` / `_v2.R` / `_v3.R` are superseded.
+- `01-ep-model/train_ep_model_live_v2.R` - Live EP model (13 features; drops `lag_goal_x`, adds `phase_of_play` + `chain_action_num`) → `ep_model_live_v2.json`/`.rds`. Save/export happens before the Daicos-R6 sanity-check diagnostics, which are `tryCatch`-wrapped so a brittle hardcoded-match lookup can never undo the save.
+- `05-live-wp-model/train_live_wp_model.R` - Live WP model (GAM → `live_wp_lookup.json` lookup table for browser)
+- `05-live-wp-model/train_live_wp_chain_v4.R` - Chain-aware live WP export (possession-POV) → `wp-model-chain.json`
 - `convert_rda_to_rds.R` - Utility to convert legacy `.rda` model files to `.rds` format
+
+One script per live JSON artifact now (the superseded `train_ep_model_live.R` v1, `train_live_wp_chain.R`/`_v2.R`/`_v3.R`, and the experimental `train_live_wp_xgb.R` are deleted; git history retains them). Each envelope carries `trained_on`, `exported_at`, `torp_sha`, and `script` metadata.
 
 **`data-raw/debug/`** holds scratch/experimental WP-comparison and calibration scripts — not part of the pipeline; ignore when tracing the training flow.
 

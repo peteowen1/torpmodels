@@ -29,15 +29,23 @@ library(jsonlite)
 torp_paths <- c("../../torp", "../torp", "../../../torp",
                 "C:/dev/torpverse/torp")
 loaded <- FALSE
+torp_path <- NA_character_
 for (p in torp_paths) {
   if (file.exists(file.path(p, "DESCRIPTION"))) {
     devtools::load_all(p)
     loaded <- TRUE
+    torp_path <- p
     cli::cli_alert_success("Loaded torp from {normalizePath(p)}")
     break
   }
 }
 if (!loaded) stop("Cannot find torp package.")
+
+torp_sha <- tryCatch(
+  system2("git", c("-C", torp_path, "rev-parse", "--short", "HEAD"), stdout = TRUE, stderr = FALSE),
+  error = function(e) NA_character_
+)
+if (length(torp_sha) != 1 || !nzchar(torp_sha)) torp_sha <- NA_character_
 
 # ── 1. Load data + EPV pipeline ──────────────────────────────────────────────
 cli::cli_h1("Training Chain-Aware Live WP v4 (possession-POV)")
@@ -235,7 +243,9 @@ envelope <- list(
   n_matches = n_matches,
   trained_on = paste0(min(wp$season), "-", max(wp$season)),
   trees = trees_nested,
-  exported_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%S%z")
+  exported_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%S%z"),
+  torp_sha = torp_sha,
+  script = "train_live_wp_chain_v4.R"
 )
 
 out_json <- "C:/dev/torpverse/torpmodels/data-raw/05-live-wp-model/wp-model-chain.json"
