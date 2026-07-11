@@ -192,15 +192,21 @@ check_manifest_sync <- function(repo = get_torpmodels_repo(), tag = "core-models
     cli::cli_abort("No {.val {.manifest_asset_name}} found for {repo}@{tag} -- nothing to check.")
   }
 
-  gh_out <- tryCatch(
+  # stdout goes to a file: system2(stdout = TRUE) splits very long lines on
+  # Windows, and re-joining with "\n" injects newlines inside JSON strings.
+  gh_json <- tempfile(fileext = ".json")
+  gh_err <- tempfile(fileext = ".txt")
+  on.exit(unlink(c(gh_json, gh_err)), add = TRUE)
+  status <- tryCatch(
     system2("gh", c("api", sprintf("repos/%s/releases/tags/%s", repo, tag)),
-            stdout = TRUE, stderr = TRUE),
-    error = function(e) NULL
+            stdout = gh_json, stderr = gh_err),
+    error = function(e) -1L
   )
-  if (is.null(gh_out) || length(gh_out) == 0 || any(grepl("HTTP 404|gh: Not Found", gh_out))) {
-    cli::cli_abort("check_manifest_sync: `gh api` failed to list release assets for {repo}@{tag}.")
+  if (!identical(status, 0L) || !file.exists(gh_json) || file.size(gh_json) == 0) {
+    err_txt <- if (file.exists(gh_err)) paste(readLines(gh_err, warn = FALSE), collapse = " ") else ""
+    cli::cli_abort("check_manifest_sync: `gh api` failed to list release assets for {repo}@{tag}. {err_txt}")
   }
-  release <- jsonlite::fromJSON(paste(gh_out, collapse = "\n"), simplifyVector = FALSE)
+  release <- jsonlite::fromJSON(gh_json, simplifyVector = FALSE)
   assets <- release$assets %||% list()
   asset_names <- vapply(assets, function(a) a$name, character(1))
   names(assets) <- asset_names
