@@ -52,6 +52,7 @@ graph TB
 |-------|-------|------|---------|------|
 | `ep_model.rds` | `ep` | XGBoost (multiclass, 5 classes) | Expected Points from field position | 794 KB |
 | `wp_model.rds` | `wp` | XGBoost (binary logistic) | Win Probability from game state | 319 KB |
+| `wp_calibration.rds` | `wp_calibration` | Two-parameter Platt-on-logit (`list(a, b)`) | WP temporal recalibration sidecar (FABLE-RECAL-PLAN.md) -- published/loaded atomically with `wp` | <1 KB |
 | `shot_ocat_mdl.rds` | `shot` | GAM (ordered categorical, 3 levels) | Shot outcome: miss/behind/goal | 19 MB |
 | `match_gams.rds` | `match_gams` | GAM pipeline (5 sequential) | Match predictions: xPoints -> score diff -> win prob | 38 MB |
 | `shot_player_df.rds` | `shot_player_df` | Lookup table | Player ID to lumped factor mapping for shot model | 7.5 KB |
@@ -134,6 +135,8 @@ graph LR
 
 **Release Process**: `train_models.R` calls `publish_model_group()` internally (atomic per model group, updates `models_manifest.json`). Manual/ad-hoc uploads should still go through `publish_model_group()` rather than a bare `piggyback::pb_upload()`, so the manifest ledger stays accurate.
 
+**WP Recalibration + Temporal Slope Gate** (FABLE-RECAL-PLAN.md): the canonical WP model is well-calibrated on random-CV but runs flat on temporal (recent-season) holdout. `train_core_models()`'s WP branch fits a `fit_wp_temporal_variant()` (EP+WP trained on seasons strictly before the last completed season, scored on that held-out season -- the honest OOS check), fits a two-parameter Platt-on-logit calibration on it (`fit_wp_calibration()`), and gates the release on the calibrated slope in both the Q4/close cell and all-rows (`validate_wp_temporal_slope()`, `|slope - 1| <= 0.10`) -- a breach `cli::cli_abort()`s before anything is written or published. On a pass, the fitted `(a, b)` ships as `wp_calibration.rds`, atomic with `wp_model.rds` via `.MODEL_GROUPS$wp`. `train_models.R --skip-slope-gate` (emergencies only) and `--no-calibrate` (skips the whole layer, forces `--no-upload`) are escape hatches. torp applies the calibration at serve time in `get_wp_preds()`, with an identity fallback when the sidecar is absent -- see `torp/ARCHITECTURE.md` and `torp/CLAUDE.md`.
+
 **Important**: The `match_gams.rds` in GitHub Releases is an evaluation reference model. Production match predictions are retrained daily via `torp/data-raw/02-models/build_match_predictions.R`.
 
 ---
@@ -146,7 +149,7 @@ graph LR
 
 **`models_manifest.json`** (`R/publish.R`): a release-level ledger asset on the `core-models` tag, updated by `update_models_manifest()` after every `publish_model_group()` call. Read-modify-write: a 404 on download means "start fresh"; any other download error aborts rather than risking a clobber. Each artifact entry carries `sha256`, `size`, `uploaded_at`, and a meta subset (model/script/seasons/SHAs/`params_hash`/`cv_metric`); the previous entry moves onto that artifact's `history` (capped at 20). The manifest itself uploads *last*, so artifacts always land before the ledger claims them.
 
-**`publish_model_group()`**: atomic per model group (`.MODEL_GROUPS`: `ep`, `wp`, `shot` = `c(shot_ocat_mdl.rds, shot_player_df.rds)`, `match` = `c(match_gams.rds, match_xgb_pipeline.rds)`). Aborts before any upload if a group member is missing from the output directory -- the fix for the shot model shipping without its `shot_player_df` sidecar.
+**`publish_model_group()`**: atomic per model group (`.MODEL_GROUPS`: `ep`, `wp` = `c(wp_model.rds, wp_calibration.rds)`, `shot` = `c(shot_ocat_mdl.rds, shot_player_df.rds)`, `match` = `c(match_gams.rds, match_xgb_pipeline.rds)`). Aborts before any upload if a group member is missing from the output directory -- the fix for the shot model shipping without its `shot_player_df` sidecar, and (as of FABLE-RECAL-PLAN.md) the same guarantee for `wp_calibration.rds`: a WP model can never publish without its recalibration sidecar, so a consumer can never see a `wp_model.rds` update without the paired calibration also being current.
 
 **`check_manifest_sync()`**: ad hoc drift detector. Compares each release asset's `updated_at`/`size` (via `gh api`) against its manifest record; reports any asset newer/different-size than its manifest entry ("uploaded outside the canonical path") and any manifest entry with no matching asset.
 
@@ -161,7 +164,7 @@ graph LR
 | `R/publish.R` | Atomic publish + manifest ledger | `publish_model_group()`, `update_models_manifest()`, `check_manifest_sync()` |
 | `R/torpmodels-package.R` | Package-level documentation | (roxygen2 docs only) |
 | `data-raw/train_models.R` | THE canonical EP/WP/shot training CLI | Arg parsing, `devtools::load_all()` of dev torp + torpmodels, delegates to `lib/train_lib.R` |
-| `data-raw/lib/train_lib.R` | Fitting functions shared by `train_models.R` and rebuild Phase 4 | `fit_ep()`, `fit_wp()`, `fit_shot()`, `train_core_models()`, `wp_params()` (derives `monotone_constraints` from `torp:::WP_MODEL_FEATURES`) |
+| `data-raw/lib/train_lib.R` | Fitting functions shared by `train_models.R` and rebuild Phase 4 | `fit_ep()`, `fit_wp()`, `fit_shot()`, `train_core_models()`, `wp_params()` (derives `monotone_constraints` from `torp:::WP_MODEL_FEATURES`); WP recalibration + slope gate: `fit_wp_temporal_variant()`, `fit_wp_calibration()`, `wp_gate_slope()`, `validate_wp_temporal_slope()`, `cv_wp_oos_preds()` |
 | `data-raw/02-wp-model/validate_cv_ep_wp.R` | Compares in-sample vs CV-EP WP training | Sources `lib/train_lib.R` for shared plumbing |
 | `data-raw/04-match-model/train_match_models.R` | Rolling out-of-sample match-model evaluation | 5-model sequential GAM pipeline, evaluation only (no production save) |
 | `tests/testthat/test-load_model.R` | Test suite (17 test_that blocks) | Name normalization, cache ops, corruption recovery |

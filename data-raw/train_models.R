@@ -11,8 +11,14 @@
 #   Rscript data-raw/train_models.R ep wp --seasons 2021 2024   # explicit window
 #   Rscript data-raw/train_models.R wp --insample-ep            # legacy comparison; never uploads
 #   Rscript data-raw/train_models.R ep --torp ../torp           # explicit torp path
+#   Rscript data-raw/train_models.R wp --skip-slope-gate         # disable the temporal Q4/close release gate (emergencies only)
+#   Rscript data-raw/train_models.R wp --no-calibrate            # skip the WP recalibration layer entirely; forces --no-upload
 #
 # With no model names given, trains ep + wp + shot (the full set).
+#
+# --skip-slope-gate and --no-calibrate are the WP recalibration + temporal
+# slope release gate flags (FABLE-RECAL-PLAN.md D5/Step 4): the gate is ON
+# and calibration fits by default for every WP training run.
 #
 # TRAINING-CONSOLIDATION-PLAN.md Step 3.
 
@@ -70,7 +76,9 @@ if (length(seasons_idx) > 0) {
 
 no_upload <- "--no-upload" %in% args
 insample_ep <- "--insample-ep" %in% args
-args <- setdiff(args, c("--no-upload", "--insample-ep"))
+skip_slope_gate <- "--skip-slope-gate" %in% args
+no_calibrate <- "--no-calibrate" %in% args
+args <- setdiff(args, c("--no-upload", "--insample-ep", "--skip-slope-gate", "--no-calibrate"))
 
 unknown_flags <- args[grepl("^--", args)]
 if (length(unknown_flags) > 0) {
@@ -106,15 +114,19 @@ source("data-raw/lib/train_lib.R")
 seasons <- seasons_override %||% default_training_seasons()
 upload <- !no_upload
 wp_ep_source <- if (insample_ep) "insample" else "cv"
+slope_gate <- !skip_slope_gate
+calibrate <- !no_calibrate
 
 cli::cli_h1("Training: {paste(model_names, collapse = ', ')}")
-cli::cli_inform("Seasons: {min(seasons)}-{max(seasons)} | upload: {upload} | wp_ep_source: {wp_ep_source}")
+cli::cli_inform("Seasons: {min(seasons)}-{max(seasons)} | upload: {upload} | wp_ep_source: {wp_ep_source} | calibrate: {calibrate} | slope_gate: {slope_gate}")
 
 results <- train_core_models(
   models = model_names,
   seasons = seasons,
   upload = upload,
-  wp_ep_source = wp_ep_source
+  wp_ep_source = wp_ep_source,
+  slope_gate = slope_gate,
+  calibrate = calibrate
 )
 
 cli::cli_h1("Training complete")
