@@ -364,28 +364,198 @@ fit_wp_temporal_variant <- function(model_data_epv, gate_season,
   score_wp_rows(gate_data, ep_fit$model, wp_fit$model)
 }
 
-#' Fit the two-parameter Platt-on-logit calibration (D1)
+#' Fit the Platt-on-logit calibration (D1): global or Q4/close-interaction form
 #'
-#' `p' = plogis(a + b * qlogis(p))`. Draw rows (`label == 0.5`) are dropped
-#' before fitting, matching torpverse/docs/reviews/FABLE-WP-EXPERIMENTS.md's convention ("kept for
-#' logloss, excluded from calibration slopes").
+#' Global (2 params, always the FIRST attempt):
+#' `p' = plogis(a + b * qlogis(p))`. Q4/close interaction (D1's
+#' pre-authorized escalation, 4 params -- used only when the
+#' globally-calibrated Q4/close slope still breaches the gate):
+#' `glm(label ~ qlogis(pred) * is_q4close, binomial)`, i.e.
+#' `p' = plogis((a + a_q4c*I) + (b + b_q4c*I) * qlogis(p))` with
+#' `I = is_q4close`. Per D1: do NOT go further (no splines, no per-quarter
+#' models -- that is retraining by another name).
+#'
+#' Draw rows (`label == 0.5`) are dropped before fitting, matching
+#' FABLE-WP-EXPERIMENTS.md's convention ("kept for logloss, excluded from
+#' calibration slopes"). Both forms return the same shape so the shipped
+#' artifact schema is uniform: the global form carries `a_q4c = 0,
+#' b_q4c = 0`.
 #'
 #' @param preds Numeric vector of raw (uncalibrated) WP predictions.
 #' @param labels Numeric vector, same length, values in `{0, 0.5, 1}`.
-#' @return `list(a, b)`.
+#' @param is_q4close Logical vector, same length as `labels`: the plan's
+#'   exact cell (`period == 4 & abs(points_diff) <= 12`, see
+#'   [wp_cell_flag()]). Required by (and only used by) the interaction
+#'   form; `NA` is treated as out-of-cell.
+#' @param form `"global"` (default) or `"q4close_interaction"`.
+#' @return `list(a, b, a_q4c, b_q4c, form)`.
 #' @keywords internal
-fit_wp_calibration <- function(preds, labels) {
+fit_wp_calibration <- function(preds, labels, is_q4close = NULL,
+                               form = c("global", "q4close_interaction")) {
+  form <- match.arg(form)
   keep <- labels %in% c(0, 1)
   y <- labels[keep]
   p <- pmin(pmax(preds[keep], 1e-6), 1 - 1e-6)
+  x <- stats::qlogis(p)
 
-  fit <- stats::glm(y ~ stats::qlogis(p), family = stats::binomial())
-  co <- unname(stats::coef(fit))
-  a <- co[1]
-  b <- co[2]
+  if (form == "global") {
+    fit <- stats::glm(y ~ x, family = stats::binomial())
+    co <- unname(stats::coef(fit))
+    a <- co[1]
+    b <- co[2]
+    a_q4c <- 0
+    b_q4c <- 0
+    stopifnot(is.finite(a), is.finite(b), b > 0)
+  } else {
+    if (is.null(is_q4close)) {
+      cli::cli_abort("fit_wp_calibration(form = 'q4close_interaction') requires {.arg is_q4close}")
+    }
+    stopifnot(length(is_q4close) == length(labels))
+    I <- as.numeric(is_q4close[keep])
+    I[is.na(I)] <- 0
+    fit <- stats::glm(y ~ x * I, family = stats::binomial())
+    co <- stats::coef(fit)
+    a <- unname(co[["(Intercept)"]])
+    b <- unname(co[["x"]])
+    a_q4c <- unname(co[["I"]])
+    b_q4c <- unname(co[["x:I"]])
+    # b > 0 keeps the out-of-cell map strictly monotone; b + b_q4c > 0 keeps
+    # the in-cell map strictly monotone. WPA consumes DIFFERENCES of
+    # consecutive predictions, so monotonicity is a hard requirement (D1).
+    stopifnot(is.finite(a), is.finite(b), is.finite(a_q4c), is.finite(b_q4c),
+              b > 0, b + b_q4c > 0)
+  }
 
-  stopifnot(is.finite(a), is.finite(b), b > 0)
-  list(a = a, b = b)
+  list(a = a, b = b, a_q4c = a_q4c, b_q4c = b_q4c, form = form)
+}
+
+#' The plan's exact gate cell, as a per-row flag
+#'
+#' `period == 4 & abs(points_diff) <= 12`. `NA` period/points_diff rows are
+#' out-of-cell (global calibration arm) -- mirrors torp's serve-time guard
+#' in `get_wp_preds()`.
+#'
+#' @param meta_cols Data frame with `period` and `points_diff` columns.
+#' @param period Integer, cell quarter (default 4).
+#' @param margin_abs_max Numeric, cell half-width in points (default 12).
+#' @return Logical vector, one flag per row, never `NA`.
+#' @keywords internal
+wp_cell_flag <- function(meta_cols, period = 4, margin_abs_max = 12) {
+  flag <- meta_cols$period == period & abs(meta_cols$points_diff) <= margin_abs_max
+  flag[is.na(flag)] <- FALSE
+  flag
+}
+
+#' Apply a fitted WP calibration to raw predictions
+#'
+#' The single formula that trainer-side evaluation implements here and
+#' torp's `get_wp_preds()` implements independently at serve time:
+#' `plogis((a + a_q4c*I) + (b + b_q4c*I) * qlogis(p))`, `I = is_q4close`.
+#' Tolerant of missing/non-finite `a_q4c`/`b_q4c` (treated as 0), so a
+#' global-form or pre-escalation 2-param artifact stays valid. `NA`s in
+#' `is_q4close` are out-of-cell.
+#'
+#' @param preds Numeric vector of raw WP predictions.
+#' @param calib Calibration list with at least `a` and `b`.
+#' @param is_q4close Logical vector, or `NULL` for all-out-of-cell (pure
+#'   global application).
+#' @return Numeric vector of calibrated predictions.
+#' @keywords internal
+apply_wp_calibration <- function(preds, calib, is_q4close = NULL) {
+  a_q4c <- calib$a_q4c
+  if (is.null(a_q4c) || length(a_q4c) != 1 || !is.finite(a_q4c)) a_q4c <- 0
+  b_q4c <- calib$b_q4c
+  if (is.null(b_q4c) || length(b_q4c) != 1 || !is.finite(b_q4c)) b_q4c <- 0
+
+  I <- if (is.null(is_q4close)) rep(0, length(preds)) else as.numeric(is_q4close)
+  I[is.na(I)] <- 0
+
+  stats::plogis((calib$a + a_q4c * I) + (calib$b + b_q4c * I) * stats::qlogis(preds))
+}
+
+#' Cell-boundary discontinuity of a calibration (report-only design guard)
+#'
+#' A hard cell boundary can discontinuously jump WP when a goal takes
+#' |margin| across 12 or play crosses into Q4 -- WPA turns that jump into
+#' spurious credit spikes. For a grid of raw p, computes
+#' `|calibrated_in_cell - calibrated_out_of_cell|`; the trainer prints the
+#' max and the p = 0.5 value in WP points and stores `max_boundary_jump`
+#' (probability scale) in the calibration meta. NOT gated -- Pete decides
+#' if it needs smoothing later. Identically 0 for a global-form fit.
+#'
+#' @param calib Calibration list (see [fit_wp_calibration()]).
+#' @param grid Numeric vector of raw probabilities to scan.
+#' @return `list(max_jump, max_at_p, jump_at_p50)`, probability scale.
+#' @keywords internal
+wp_calibration_boundary_jump <- function(calib, grid = seq(0.05, 0.95, by = 0.01)) {
+  in_cell <- apply_wp_calibration(grid, calib, rep(TRUE, length(grid)))
+  out_cell <- apply_wp_calibration(grid, calib, rep(FALSE, length(grid)))
+  jump <- abs(in_cell - out_cell)
+  list(
+    max_jump = max(jump),
+    max_at_p = grid[which.max(jump)],
+    jump_at_p50 = jump[which.min(abs(grid - 0.5))]
+  )
+}
+
+#' Print gate-cell sample-size + reliability diagnostics
+#'
+#' Answers "is the measured Q4/close slope a stable estimate or thin-cell
+#' noise": prints the cell's match count, raw row count, deduped
+#' `(match_id, bucket)` observation count, and per-decile reliability
+#' (mean predicted vs actual) on the deduped cell -- the same dedup the
+#' gate statistic uses.
+#'
+#' @param preds Numeric vector of (typically calibrated) WP predictions.
+#' @param labels Numeric vector, values in `{0, 0.5, 1}`.
+#' @param meta_cols Data frame with `period`, `points_diff`,
+#'   `est_match_elapsed`, `match_id` (see [score_wp_rows()]).
+#' @param label Optional character tag prefixed to the printed lines (e.g.
+#'   `"fit half"` / `"gate half"`).
+#' @return The per-decile reliability data frame, invisibly (`NULL` if the
+#'   cell is empty).
+#' @keywords internal
+wp_gate_cell_diagnostics <- function(preds, labels, meta_cols, label = NULL) {
+  tag <- if (is.null(label)) "" else paste0("[", label, "] ")
+
+  d <- data.frame(
+    pred = preds, label_wp = labels,
+    period = meta_cols$period, points_diff = meta_cols$points_diff,
+    est_match_elapsed = meta_cols$est_match_elapsed, match_id = meta_cols$match_id
+  )
+  n_total_matches <- length(unique(d$match_id))
+  d <- d[d$label_wp %in% c(0, 1), ]
+  cell <- d[wp_cell_flag(d), ]
+
+  if (nrow(cell) == 0) {
+    cli::cli_warn("{tag}Q4/close gate cell is EMPTY -- no diagnostics possible")
+    return(invisible(NULL))
+  }
+
+  cell$bucket <- pmin(4, pmax(0, cell$est_match_elapsed %/% 300 - 11))
+  dd <- cell |>
+    dplyr::group_by(.data$match_id, .data$bucket) |>
+    dplyr::summarise(label_wp = dplyr::last(.data$label_wp),
+                     pred = dplyr::last(.data$pred), .groups = "drop")
+
+  cli::cli_inform(
+    "{tag}{n_total_matches} matches total | Q4/close cell: {length(unique(cell$match_id))} matches, {nrow(cell)} raw rows, {nrow(dd)} deduped (match_id, bucket) obs"
+  )
+
+  dd$decile <- cut(dd$pred, seq(0, 1, 0.1), include.lowest = TRUE)
+  rel <- dd |>
+    dplyr::group_by(.data$decile) |>
+    dplyr::summarise(
+      n = dplyr::n(),
+      mean_pred = round(mean(.data$pred), 3),
+      actual = round(mean(.data$label_wp), 3),
+      gap = round(mean(.data$label_wp) - mean(.data$pred), 3),
+      .groups = "drop"
+    )
+  cli::cli_inform("{tag}Per-decile reliability (deduped Q4/close cell):")
+  print(as.data.frame(rel))
+
+  invisible(rel)
 }
 
 #' Calibration-slope gate statistic (D5)
@@ -403,10 +573,15 @@ fit_wp_calibration <- function(preds, labels) {
 #'   `est_match_elapsed`, `match_id` columns, same row order/length as
 #'   `preds`/`labels` (see [score_wp_rows()]).
 #' @param cell One of `"q4close"` (default) or `"all"`.
-#' @return Numeric scalar slope, or `NA_real_` if the cell is degenerate
-#'   (too few rows / a single class).
+#' @param detail Logical, default `FALSE`. When `TRUE`, returns
+#'   `list(slope, se, n)` (`se` = the GLM coefficient's standard error,
+#'   `n` = rows the GLM saw after cell filter + dedup) instead of the bare
+#'   slope -- used by the gate to judge breach-vs-noise on thin cells.
+#' @return Numeric scalar slope (or `NA_real_` if the cell is degenerate:
+#'   too few rows / a single class); with `detail = TRUE`, a list.
 #' @keywords internal
-wp_gate_slope <- function(preds, labels, meta_cols, cell = c("q4close", "all")) {
+wp_gate_slope <- function(preds, labels, meta_cols, cell = c("q4close", "all"),
+                          detail = FALSE) {
   cell <- match.arg(cell)
 
   d <- data.frame(
@@ -425,11 +600,20 @@ wp_gate_slope <- function(preds, labels, meta_cols, cell = c("q4close", "all")) 
                        pred = dplyr::last(.data$pred), .groups = "drop")
   }
 
-  if (nrow(d) < 2 || length(unique(d$label_wp)) < 2) return(NA_real_)
+  if (nrow(d) < 2 || length(unique(d$label_wp)) < 2) {
+    if (detail) return(list(slope = NA_real_, se = NA_real_, n = nrow(d)))
+    return(NA_real_)
+  }
 
   p <- pmin(pmax(d$pred, 1e-6), 1 - 1e-6)
   fit <- stats::glm(d$label_wp ~ stats::qlogis(p), family = stats::binomial())
-  unname(stats::coef(fit)[2])
+  slope <- unname(stats::coef(fit)[2])
+
+  if (!detail) return(slope)
+
+  se <- tryCatch(unname(summary(fit)$coefficients[2, "Std. Error"]),
+                 error = function(e) NA_real_)
+  list(slope = slope, se = se, n = nrow(d))
 }
 
 #' The temporal Q4/close release gate (D5) -- aborts before anything is
@@ -443,31 +627,45 @@ wp_gate_slope <- function(preds, labels, meta_cols, cell = c("q4close", "all")) 
 #' @param calibrated_preds Numeric vector of calibrated WP predictions.
 #' @param labels Numeric vector, same length, values in `{0, 0.5, 1}`.
 #' @param meta_cols Data frame, see [wp_gate_slope()].
-#' @param threshold Numeric, default `0.10` (D5).
-#' @return `list(slope_all, slope_q4close)`, invisibly reachable via return
-#'   value only on a pass (the function aborts on a breach).
+#' @param threshold Numeric, default `0.10` (D5). The threshold itself never
+#'   widens -- on a thin Q4/close cell (deduped n < 150) the gate
+#'   additionally reports the slope's GLM standard error so a breach can be
+#'   judged against noise, but still gates at 0.10.
+#' @return `list(slope_all, slope_q4close, se_q4close, n_q4close)`,
+#'   reachable via return value only on a pass (the function aborts on a
+#'   breach).
 #' @keywords internal
 validate_wp_temporal_slope <- function(calibrated_preds, labels, meta_cols, threshold = 0.10) {
   slope_all <- wp_gate_slope(calibrated_preds, labels, meta_cols, cell = "all")
-  slope_q4close <- wp_gate_slope(calibrated_preds, labels, meta_cols, cell = "q4close")
+  q4c <- wp_gate_slope(calibrated_preds, labels, meta_cols, cell = "q4close", detail = TRUE)
+  slope_q4close <- q4c$slope
 
   ok_all <- !is.na(slope_all) && abs(slope_all - 1) <= threshold
   ok_q4close <- !is.na(slope_q4close) && abs(slope_q4close - 1) <= threshold
+
+  thin_cell <- !is.na(q4c$n) && q4c$n < 150
+  q4c_detail <- if (thin_cell) {
+    " [THIN CELL: n = {q4c$n} deduped obs < 150 -- slope SE = {round(q4c$se, 3)}; judge breach vs noise, gate still 0.10]"
+  } else {
+    " (n = {q4c$n} deduped obs)"
+  }
 
   if (!ok_all || !ok_q4close) {
     cli::cli_abort(c(
       "WP temporal slope gate FAILED -- |slope - 1| must be <= {threshold}",
       "x" = "slope_all = {round(slope_all, 3)} ({if (ok_all) 'ok' else 'BREACH'})",
-      "x" = "slope_q4close = {round(slope_q4close, 3)} ({if (ok_q4close) 'ok' else 'BREACH'})",
+      "x" = paste0("slope_q4close = {round(slope_q4close, 3)} ({if (ok_q4close) 'ok' else 'BREACH'})", q4c_detail),
       "i" = "Nothing written or published. Emergency override: train_models.R --skip-slope-gate."
     ))
   }
 
-  cli::cli_alert_success(
-    "WP temporal slope gate passed: slope_all = {round(slope_all, 3)}, slope_q4close = {round(slope_q4close, 3)} (threshold {threshold})"
-  )
+  cli::cli_alert_success(paste0(
+    "WP temporal slope gate passed: slope_all = {round(slope_all, 3)}, slope_q4close = {round(slope_q4close, 3)}",
+    q4c_detail, " (threshold {threshold})"
+  ))
 
-  list(slope_all = slope_all, slope_q4close = slope_q4close)
+  list(slope_all = slope_all, slope_q4close = slope_q4close,
+       se_q4close = q4c$se, n_q4close = q4c$n)
 }
 
 #' Fit the shot outcome model (ordered categorical GAM)
@@ -630,40 +828,128 @@ train_core_models <- function(models = c("ep", "wp", "shot"),
       temporal <- fit_wp_temporal_variant(model_data_epv, gate_season,
                                           params_ep = ep_params(), params_wp = wp_params())
 
-      slope_all_before <- wp_gate_slope(temporal$preds, temporal$labels, temporal$meta_cols, "all")
-      slope_q4close_before <- wp_gate_slope(temporal$preds, temporal$labels, temporal$meta_cols, "q4close")
-      cli::cli_inform("Uncalibrated temporal slopes: all = {round(slope_all_before, 3)}, q4close = {round(slope_q4close_before, 3)}")
+      # ---- Split-half fit/gate within the holdout season -------------------
+      # Fitting the calibration on the gate season AND gating on the same
+      # rows is partly self-confirming (the cell that gets its own
+      # interaction term near-guarantees its own pass). So: split the gate
+      # season's MATCHES (match-grouped, seed-stable -- same construction as
+      # make_match_folds) into a calibration half and a validation half.
+      # ALL fitting (global + any escalation refit) sees only the fit half;
+      # ALL gate slopes are measured only on the gate half.
+      half <- make_match_folds(temporal$meta_cols$match_id, k = 2L)
+      fit_idx <- which(half == 1L)
+      gate_idx <- which(half == 2L)
+      fit_meta <- temporal$meta_cols[fit_idx, , drop = FALSE]
+      gate_meta <- temporal$meta_cols[gate_idx, , drop = FALSE]
+      n_fit_half_matches <- length(unique(fit_meta$match_id))
+      n_gate_half_matches <- length(unique(gate_meta$match_id))
+      cli::cli_inform(
+        "Split-half within gate season {gate_season}: fit half = {n_fit_half_matches} matches ({length(fit_idx)} rows), gate half = {n_gate_half_matches} matches ({length(gate_idx)} rows)"
+      )
 
-      calib <- fit_wp_calibration(temporal$preds, temporal$labels)
-      cli::cli_inform("Fitted calibration: a = {round(calib$a, 4)}, b = {round(calib$b, 4)}")
+      slope_all_before <- wp_gate_slope(temporal$preds[gate_idx], temporal$labels[gate_idx], gate_meta, "all")
+      slope_q4close_before <- wp_gate_slope(temporal$preds[gate_idx], temporal$labels[gate_idx], gate_meta, "q4close")
+      cli::cli_inform("Uncalibrated temporal slopes (gate half): all = {round(slope_all_before, 3)}, q4close = {round(slope_q4close_before, 3)}")
 
-      calibrated_preds <- stats::plogis(calib$a + calib$b * stats::qlogis(temporal$preds))
+      # Stage 1: the 2-param global fit is ALWAYS the first attempt (D1),
+      # fitted on the fit half only.
+      is_q4c_fit <- wp_cell_flag(fit_meta)
+      is_q4c_gate <- wp_cell_flag(gate_meta)
+      calib_global <- fit_wp_calibration(temporal$preds[fit_idx], temporal$labels[fit_idx])
+      cli::cli_inform("Fitted global calibration (fit half): a = {round(calib_global$a, 4)}, b = {round(calib_global$b, 4)}")
+
+      # Global-form slopes on BOTH halves: the fit half drives the
+      # escalation decision (so the gate half never influences form
+      # selection); the gate-half numbers are recorded as the honest
+      # would-have-shipped stage-1 measurement.
+      cal_fit_global <- apply_wp_calibration(temporal$preds[fit_idx], calib_global, is_q4c_fit)
+      slope_q4close_fithalf_global <- wp_gate_slope(cal_fit_global, temporal$labels[fit_idx], fit_meta, "q4close")
+      cal_gate_global <- apply_wp_calibration(temporal$preds[gate_idx], calib_global, is_q4c_gate)
+      slope_all_global <- wp_gate_slope(cal_gate_global, temporal$labels[gate_idx], gate_meta, "all")
+      slope_q4close_global <- wp_gate_slope(cal_gate_global, temporal$labels[gate_idx], gate_meta, "q4close")
+      cli::cli_inform(
+        "Global-form calibrated slopes: fit-half q4close = {round(slope_q4close_fithalf_global, 3)} (escalation check) | gate-half all = {round(slope_all_global, 3)}, q4close = {round(slope_q4close_global, 3)}"
+      )
+
+      # Stage 2 (D1's pre-authorized escalation): only when the
+      # globally-calibrated Q4/close slope still breaches 0.10 -- measured
+      # on the FIT half, so form selection never touches the gate half.
+      # Escalation is a property of the measured breach, not of slope_gate:
+      # an unfenced (--skip-slope-gate) run still ships the better form.
+      escalated <- !is.na(slope_q4close_fithalf_global) && abs(slope_q4close_fithalf_global - 1) > 0.10
+      calib <- calib_global
+      if (escalated) {
+        cli::cli_alert_warning(
+          "Global calibration leaves fit-half q4close slope at {round(slope_q4close_fithalf_global, 3)} (|slope - 1| > 0.10) -- escalating to the D1 q4close-interaction form (4 params, fit half only)"
+        )
+        calib <- fit_wp_calibration(temporal$preds[fit_idx], temporal$labels[fit_idx],
+                                    is_q4close = is_q4c_fit, form = "q4close_interaction")
+        cli::cli_inform(
+          "Fitted interaction calibration (fit half): a = {round(calib$a, 4)}, b = {round(calib$b, 4)}, a_q4c = {round(calib$a_q4c, 4)}, b_q4c = {round(calib$b_q4c, 4)}"
+        )
+      }
+
+      # Final calibrated predictions on the gate half -- the only rows the
+      # gate ever sees. Genuine out-of-sample for the calibration fit.
+      calibrated_gate <- apply_wp_calibration(temporal$preds[gate_idx], calib, is_q4c_gate)
 
       if (isTRUE(slope_gate)) {
-        gated <- validate_wp_temporal_slope(calibrated_preds, temporal$labels, temporal$meta_cols, threshold = 0.10)
+        gated <- validate_wp_temporal_slope(calibrated_gate, temporal$labels[gate_idx], gate_meta, threshold = 0.10)
         slope_all_after <- gated$slope_all
         slope_q4close_after <- gated$slope_q4close
       } else {
-        slope_all_after <- wp_gate_slope(calibrated_preds, temporal$labels, temporal$meta_cols, "all")
-        slope_q4close_after <- wp_gate_slope(calibrated_preds, temporal$labels, temporal$meta_cols, "q4close")
-        cli::cli_alert_warning("Slope gate skipped (slope_gate = FALSE): all = {round(slope_all_after, 3)}, q4close = {round(slope_q4close_after, 3)}")
+        slope_all_after <- wp_gate_slope(calibrated_gate, temporal$labels[gate_idx], gate_meta, "all")
+        q4c_detail <- wp_gate_slope(calibrated_gate, temporal$labels[gate_idx], gate_meta, "q4close", detail = TRUE)
+        slope_q4close_after <- q4c_detail$slope
+        cli::cli_alert_warning(
+          "Slope gate skipped (slope_gate = FALSE): all = {round(slope_all_after, 3)}, q4close = {round(slope_q4close_after, 3)} (n = {q4c_detail$n}, SE = {round(q4c_detail$se, 3)})"
+        )
       }
 
+      # Cell-boundary discontinuity -- report-only design guard, never gated.
+      bj <- wp_calibration_boundary_jump(calib)
+      cli::cli_inform(
+        "[report-only, not gated] Cell-boundary discontinuity: max = {round(bj$max_jump * 100, 2)} WP pts (at raw p = {bj$max_at_p}), at p = 0.5: {round(bj$jump_at_p50 * 100, 2)} WP pts"
+      )
+
+      # Gate-cell sample-size + reliability diagnostics, BOTH halves --
+      # lets the log answer "stable estimate or thin-cell noise?" (the cell
+      # is ~1 season and halved, so n visibility is essential).
+      cal_fit_final <- apply_wp_calibration(temporal$preds[fit_idx], calib, is_q4c_fit)
+      wp_gate_cell_diagnostics(cal_fit_final, temporal$labels[fit_idx], fit_meta, label = "fit half")
+      wp_gate_cell_diagnostics(calibrated_gate, temporal$labels[gate_idx], gate_meta, label = "gate half")
+
+      calib_formula <- "plogis((a + a_q4c*I) + (b + b_q4c*I)*qlogis(p)), I = is_q4close"
       wp_calibration_obj <- list(
-        a = calib$a, b = calib$b, formula = "plogis(a + b*qlogis(p))",
-        fitted_on = "temporal-oos", gate_season = gate_season,
-        n_fit = length(temporal$labels),
+        a = calib$a, b = calib$b, a_q4c = calib$a_q4c, b_q4c = calib$b_q4c,
+        form = calib$form,
+        cell = list(period = 4, margin_abs_max = 12),
+        formula = calib_formula,
+        fitted_on = "temporal-oos-fit-half", gate_season = gate_season,
+        n_fit = length(fit_idx),
+        n_fit_half_matches = n_fit_half_matches,
+        n_gate_half_matches = n_gate_half_matches,
         slope_before = slope_all_before, slope_after = slope_all_after,
-        slope_q4close_before = slope_q4close_before, slope_q4close_after = slope_q4close_after
+        slope_q4close_before = slope_q4close_before, slope_q4close_after = slope_q4close_after,
+        slope_all_global = slope_all_global, slope_q4close_global = slope_q4close_global,
+        max_boundary_jump = bj$max_jump
       )
       wp_calibration_meta <- torpmodels:::build_model_meta(
-        "wp_calibration", seasons, list(formula = "plogis(a + b*qlogis(p))"), c("a", "b"),
-        n_rows = length(temporal$labels),
+        "wp_calibration", seasons, list(formula = calib_formula, form = calib$form),
+        c("a", "b", "a_q4c", "b_q4c"),
+        n_rows = length(fit_idx),
         extra = list(
-          script = "train_models.R", a = calib$a, b = calib$b,
-          gate_season = gate_season, n_fit = length(temporal$labels),
+          script = "train_models.R",
+          a = calib$a, b = calib$b, a_q4c = calib$a_q4c, b_q4c = calib$b_q4c,
+          form = calib$form,
+          gate_season = gate_season, n_fit = length(fit_idx),
+          n_fit_half_matches = n_fit_half_matches,
+          n_gate_half_matches = n_gate_half_matches,
           slope_before = slope_all_before, slope_after = slope_all_after,
-          slope_q4close_before = slope_q4close_before, slope_q4close_after = slope_q4close_after
+          slope_q4close_before = slope_q4close_before, slope_q4close_after = slope_q4close_after,
+          slope_all_global = slope_all_global, slope_q4close_global = slope_q4close_global,
+          slope_q4close_fithalf_global = slope_q4close_fithalf_global,
+          max_boundary_jump = bj$max_jump
         )
       )
       saveRDS(torpmodels:::stamp_model_meta(wp_calibration_obj, wp_calibration_meta),
@@ -674,9 +960,9 @@ train_core_models <- function(models = c("ep", "wp", "shot"),
       row_folds_wp <- make_match_folds(model_data_wp$torp_match_id)
       folds_wp <- lapply(seq_len(max(row_folds_wp)), function(k) which(row_folds_wp == k))
       cv_oos <- cv_wp_oos_preds(wp_fit$X, wp_fit$y, folds_wp, wp_params(), wp_fit$optimal_nrounds)
-      cv_oos_calibrated <- stats::plogis(calib$a + calib$b * stats::qlogis(cv_oos))
       meta_full <- model_data_wp |> dplyr::select("period", "points_diff",
                                                    "est_match_elapsed", "match_id")
+      cv_oos_calibrated <- apply_wp_calibration(cv_oos, calib, wp_cell_flag(meta_full))
       cli::cli_inform(
         "[report-only, not gated] Random-CV calibrated slope: all = {round(wp_gate_slope(cv_oos_calibrated, model_data_wp$label_wp, meta_full, 'all'), 3)}, q4close = {round(wp_gate_slope(cv_oos_calibrated, model_data_wp$label_wp, meta_full, 'q4close'), 3)}"
       )
@@ -688,7 +974,7 @@ train_core_models <- function(models = c("ep", "wp", "shot"),
       } else {
         ip_epv <- torp::clean_pbp(ip_chains) |> torp:::clean_model_data_epv()
         ip_scored <- score_wp_rows(ip_epv, ep_fit$model, wp_fit$model)
-        ip_preds_cal <- stats::plogis(calib$a + calib$b * stats::qlogis(ip_scored$preds))
+        ip_preds_cal <- apply_wp_calibration(ip_scored$preds, calib, wp_cell_flag(ip_scored$meta_cols))
         cli::cli_inform(
           "[report-only, not gated] In-progress season {in_progress_season}: calibrated slope all = {round(wp_gate_slope(ip_preds_cal, ip_scored$labels, ip_scored$meta_cols, 'all'), 3)}, q4close = {round(wp_gate_slope(ip_preds_cal, ip_scored$labels, ip_scored$meta_cols, 'q4close'), 3)} (n = {length(ip_scored$labels)})"
         )
