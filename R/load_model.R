@@ -9,7 +9,7 @@
 .CORE_MODELS <- c(
   "ep" = "Expected Points (EP) model - XGBoost multiclass for predicting expected points from field position",
   "wp" = "Win Probability (WP) model - predicts probability of winning from game state",
-  "wp_calibration" = "WP recalibration sidecar - two-parameter Platt-on-logit correction for temporal calibration drift (FABLE-RECAL-PLAN.md)",
+  "wp_calibration" = "WP recalibration sidecar - two-parameter Platt-on-logit correction for temporal calibration drift (torpverse/docs/plans/FABLE-RECAL-PLAN.md)",
   "shot" = "Shot outcome model - ordered categorical model for shot results",
   "match_gams" = "Sequential GAM pipeline for match predictions (5 models: total_xpoints, xscore_diff, conv_diff, score_diff, win)",
   "match_xgb_pipeline" = "XGBoost pipeline (5 models) for match predictions - evaluation/comparison only",

@@ -3,7 +3,7 @@
 # Compares WP models trained with in-sample vs cross-validated EP predictions.
 # Run to quantify the improvement CV-EP gives over the legacy in-sample
 # approach. Sources lib/train_lib.R for the shared data/fold/CV plumbing --
-# the canonical trainer (TRAINING-CONSOLIDATION-PLAN.md Step 3).
+# the canonical trainer (torpverse/docs/plans/TRAINING-CONSOLIDATION-PLAN.md Step 3).
 
 library(devtools)
 library(tidyverse)

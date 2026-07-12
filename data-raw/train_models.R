@@ -17,10 +17,10 @@
 # With no model names given, trains ep + wp + shot (the full set).
 #
 # --skip-slope-gate and --no-calibrate are the WP recalibration + temporal
-# slope release gate flags (FABLE-RECAL-PLAN.md D5/Step 4): the gate is ON
+# slope release gate flags (torpverse/docs/plans/FABLE-RECAL-PLAN.md D5/Step 4): the gate is ON
 # and calibration fits by default for every WP training run.
 #
-# TRAINING-CONSOLIDATION-PLAN.md Step 3.
+# torpverse/docs/plans/TRAINING-CONSOLIDATION-PLAN.md Step 3.
 
 library(devtools)
 library(tidyverse)

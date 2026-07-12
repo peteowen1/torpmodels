@@ -98,7 +98,7 @@ test_that("load_torp_model() rejects unknown model names", {
   expect_error(load_torp_model("nonexistent"), "Unknown model")
 })
 
-test_that("normalize_model_name('wp_calibration') maps to the sidecar file", {  # FABLE-RECAL-PLAN.md D3
+test_that("normalize_model_name('wp_calibration') maps to the sidecar file", {  # torpverse/docs/plans/FABLE-RECAL-PLAN.md D3
   info <- normalize_model_name("wp_calibration")
   expect_equal(info$file, "wp_calibration.rds")
   expect_equal(info$tag, "core-models")

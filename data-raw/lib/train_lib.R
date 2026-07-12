@@ -8,7 +8,7 @@
 # exported entry point this file calls. All three resolve correctly whether
 # torp/torpmodels were library()'d or load_all()'d.
 #
-# TRAINING-CONSOLIDATION-PLAN.md Step 3 -- the single canonical trainer for
+# torpverse/docs/plans/TRAINING-CONSOLIDATION-PLAN.md Step 3 -- the single canonical trainer for
 # EP, WP, and shot models. Fixes F1 (WP monotone constraints derived from
 # WP_MODEL_FEATURES, never hand-inlined), F3 (shot + shot_player_df upload
 # atomically), F4 (one training-window default), C2 (every artifact stamped
@@ -239,7 +239,7 @@ fit_wp <- function(model_data_wp, params = wp_params(), nrounds_max = 500L) {
 #' per-fold-refit pattern, returns a full-length OOS probability vector.
 #' Report-only diagnostic (random-CV slope and future comparisons) -- the
 #' temporal path in [fit_wp_temporal_variant()] is the load-bearing one for
-#' the release gate (FABLE-RECAL-PLAN.md Step 1).
+#' the release gate (torpverse/docs/plans/FABLE-RECAL-PLAN.md Step 1).
 #'
 #' @param X WP feature matrix.
 #' @param y WP labels (0/0.5/1).
@@ -314,7 +314,7 @@ score_wp_rows <- function(epv_rows, ep_model, wp_model) {
 
 #' Fit the WP temporal variant and score it on the held-out gate season
 #'
-#' Mirrors FABLE-WP-EXPERIMENTS.md \enc{§}{Section}5's protocol exactly:
+#' Mirrors torpverse/docs/reviews/FABLE-WP-EXPERIMENTS.md \enc{§}{Section}5's protocol exactly:
 #' EP is trained on seasons strictly before `gate_season` (CV nrounds inside
 #' that window), 5-fold OOS EP predictions feed WP feature construction, WP
 #' is trained on the same window, and the fitted pair is then used to score
@@ -367,7 +367,7 @@ fit_wp_temporal_variant <- function(model_data_epv, gate_season,
 #' Fit the two-parameter Platt-on-logit calibration (D1)
 #'
 #' `p' = plogis(a + b * qlogis(p))`. Draw rows (`label == 0.5`) are dropped
-#' before fitting, matching FABLE-WP-EXPERIMENTS.md's convention ("kept for
+#' before fitting, matching torpverse/docs/reviews/FABLE-WP-EXPERIMENTS.md's convention ("kept for
 #' logloss, excluded from calibration slopes").
 #'
 #' @param preds Numeric vector of raw (uncalibrated) WP predictions.
@@ -393,7 +393,7 @@ fit_wp_calibration <- function(preds, labels) {
 #' `cell = "all"`: row-level `glm(label ~ qlogis(pred), binomial)` slope
 #' over every non-draw row. `cell = "q4close"`: the same GLM restricted to
 #' `period == 4 & abs(points_diff) <= 12`, after the anti-pseudoreplication
-#' dedup convention quoted in FABLE-RECAL-PLAN.md D5 -- bucket rows into
+#' dedup convention quoted in torpverse/docs/plans/FABLE-RECAL-PLAN.md D5 -- bucket rows into
 #' 5-minute buckets (`pmin(4, pmax(0, est_match_elapsed %/% 300 - 11))`)
 #' and keep only the last row per `(match_id, bucket)` before fitting.
 #'
@@ -547,7 +547,7 @@ fit_shot <- function(seasons = default_training_seasons()) {
 #'   feed WP training) or `"insample"` (legacy `train_wp_model.R` semantics
 #'   -- comparison/debug only; forces `upload = FALSE`).
 #' @param slope_gate Logical, default `TRUE`. The temporal Q4/close release
-#'   gate (FABLE-RECAL-PLAN.md D5) -- `FALSE` disables it (emergencies
+#'   gate (torpverse/docs/plans/FABLE-RECAL-PLAN.md D5) -- `FALSE` disables it (emergencies
 #'   only; the calibration still fits and slopes still print, just unfenced).
 #' @param calibrate Logical, default `TRUE`. Fits the WP recalibration layer
 #'   (D1-D3) and its release gate. `FALSE` (or `wp_ep_source = "insample"`)

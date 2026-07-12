@@ -12,7 +12,7 @@ test_that("publish_model_group aborts when any group member is missing", {  # F3
   expect_identical(upload_calls, 0L)
 })
 
-test_that("publish_model_group('wp') aborts without its wp_calibration.rds sidecar", {  # FABLE-RECAL-PLAN.md D3
+test_that("publish_model_group('wp') aborts without its wp_calibration.rds sidecar", {  # torpverse/docs/plans/FABLE-RECAL-PLAN.md D3
   dir <- withr::local_tempdir(); saveRDS(1, file.path(dir, "wp_model.rds"))
 
   upload_calls <- 0L

@@ -75,7 +75,7 @@ test_that("insample EP source forces upload = FALSE", {
 })
 
 # -----------------------------------------------------------------------
-# FABLE-RECAL-PLAN.md Step 1 -- WP recalibration + temporal slope gate
+# torpverse/docs/plans/FABLE-RECAL-PLAN.md Step 1 -- WP recalibration + temporal slope gate
 # -----------------------------------------------------------------------
 # Pure-function tests below run FIRST and must stay ahead of the wiring
 # tests further down: those mutate env$wp_gate_slope / env$fit_wp_calibration
