@@ -9,7 +9,7 @@
 #' @noRd
 .MODEL_GROUPS <- list(
   ep    = "ep_model.rds",
-  wp    = "wp_model.rds",
+  wp    = c("wp_model.rds", "wp_calibration.rds"),
   shot  = c("shot_ocat_mdl.rds", "shot_player_df.rds"),
   match = c("match_gams.rds", "match_xgb_pipeline.rds")
 )

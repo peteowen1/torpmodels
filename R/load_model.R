@@ -9,6 +9,7 @@
 .CORE_MODELS <- c(
   "ep" = "Expected Points (EP) model - XGBoost multiclass for predicting expected points from field position",
   "wp" = "Win Probability (WP) model - predicts probability of winning from game state",
+  "wp_calibration" = "WP recalibration sidecar - two-parameter Platt-on-logit correction for temporal calibration drift (FABLE-RECAL-PLAN.md)",
   "shot" = "Shot outcome model - ordered categorical model for shot results",
   "match_gams" = "Sequential GAM pipeline for match predictions (5 models: total_xpoints, xscore_diff, conv_diff, score_diff, win)",
   "match_xgb_pipeline" = "XGBoost pipeline (5 models) for match predictions - evaluation/comparison only",
@@ -172,6 +173,7 @@ get_models_dir <- function() {
 #' @param model_name Character. Name of the model to load. One of:
 #'   - "ep" or "ep_model" - Expected Points model
 #'   - "wp" or "wp_model" - Win Probability model
+#'   - "wp_calibration" - WP recalibration sidecar (published atomically with "wp")
 #'   - "shot" or "shot_ocat_mdl" - Shot outcome classification model
 #'   - "match_gams" - Sequential GAM pipeline for match predictions (production)
 #'   - "xgb_win" or "xgb_win_model" - Legacy XGBoost match prediction model
@@ -191,7 +193,7 @@ load_torp_model <- function(model_name, force_download = FALSE, verbose = TRUE) 
   model_info <- normalize_model_name(model_name)
 
   if (is.null(model_info)) {
-    cli::cli_abort("Unknown model: {model_name}. Available models: ep, wp, shot, match_gams, xgb_win (legacy)")
+    cli::cli_abort("Unknown model: {model_name}. Available models: ep, wp, wp_calibration, shot, match_gams, xgb_win (legacy)")
   }
 
   model_file <- model_info$file
@@ -438,6 +440,7 @@ normalize_model_name <- function(model_name) {
     ep_model = list(file = "ep_model.rds", tag = "core-models"),
     wp = list(file = "wp_model.rds", tag = "core-models"),
     wp_model = list(file = "wp_model.rds", tag = "core-models"),
+    wp_calibration = list(file = "wp_calibration.rds", tag = "core-models"),
     shot = list(file = "shot_ocat_mdl.rds", tag = "core-models"),
     shot_ocat_mdl = list(file = "shot_ocat_mdl.rds", tag = "core-models"),
     xgb_win = list(file = "xgb_win_model.rds", tag = "core-models"),

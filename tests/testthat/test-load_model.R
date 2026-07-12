@@ -98,6 +98,51 @@ test_that("load_torp_model() rejects unknown model names", {
   expect_error(load_torp_model("nonexistent"), "Unknown model")
 })
 
+test_that("normalize_model_name('wp_calibration') maps to the sidecar file", {  # FABLE-RECAL-PLAN.md D3
+  info <- normalize_model_name("wp_calibration")
+  expect_equal(info$file, "wp_calibration.rds")
+  expect_equal(info$tag, "core-models")
+})
+
+test_that("load_torp_model('wp_calibration') round-trips the object and prints meta", {
+  cache_dir <- withr::local_tempdir()
+  core_dir <- file.path(cache_dir, "core")
+  dir.create(core_dir, recursive = TRUE)
+  withr::local_options(torpmodels.cache_dir = cache_dir)
+
+  # As in test-model_meta.R's equivalent test: these cache fixtures are
+  # hand-built, not real published artifacts, so prime legacy (no-manifest)
+  # mode up front rather than let the real network-hitting freshness check
+  # run.
+  reset_tm_manifest_state <- function() {
+    rm(list = ls(envir = torpmodels:::.tm_manifest_state, all.names = TRUE),
+       envir = torpmodels:::.tm_manifest_state)
+  }
+  reset_tm_manifest_state()
+  withr::defer(reset_tm_manifest_state())
+  testthat::local_mocked_bindings(
+    pb_download = function(...) stop("404 Not Found"),
+    .package = "piggyback"
+  )
+  suppressWarnings(torpmodels:::.get_models_manifest(get_torpmodels_repo(), "core-models"))
+
+  calib <- list(a = 0.05, b = 1.22, formula = "plogis(a + b*qlogis(p))",
+                fitted_on = "temporal-oos", gate_season = 2025L, n_fit = 50000L,
+                slope_before = 1.14, slope_after = 1.01,
+                slope_q4close_before = 1.26, slope_q4close_after = 0.95)
+  meta <- build_model_meta("wp_calibration", 2021:2025, list(formula = "plogis(a + b*qlogis(p))"),
+                           c("a", "b"), extra = list(gate_season = 2025L))
+  saveRDS(stamp_model_meta(calib, meta), file.path(core_dir, "wp_calibration.rds"))
+
+  expect_message(
+    result <- load_torp_model("wp_calibration", verbose = TRUE),
+    "trained"
+  )
+  expect_equal(result$a, 0.05)
+  expect_equal(result$b, 1.22)
+  expect_equal(model_meta(result)$model, "wp_calibration")
+})
+
 test_that("load_stat_model() validates stat_name format", {
   expect_error(load_stat_model("GOALS"), "Invalid stat name")
   expect_error(load_stat_model("goals-per-game"), "Invalid stat name")

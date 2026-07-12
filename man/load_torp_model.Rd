@@ -11,6 +11,7 @@ load_torp_model(model_name, force_download = FALSE, verbose = TRUE)
 \itemize{
 \item "ep" or "ep_model" - Expected Points model
 \item "wp" or "wp_model" - Win Probability model
+\item "wp_calibration" - WP recalibration sidecar (published atomically with "wp")
 \item "shot" or "shot_ocat_mdl" - Shot outcome classification model
 \item "match_gams" - Sequential GAM pipeline for match predictions (production)
 \item "xgb_win" or "xgb_win_model" - Legacy XGBoost match prediction model

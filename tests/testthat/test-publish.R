@@ -12,6 +12,25 @@ test_that("publish_model_group aborts when any group member is missing", {  # F3
   expect_identical(upload_calls, 0L)
 })
 
+test_that("publish_model_group('wp') aborts without its wp_calibration.rds sidecar", {  # FABLE-RECAL-PLAN.md D3
+  dir <- withr::local_tempdir(); saveRDS(1, file.path(dir, "wp_model.rds"))
+
+  upload_calls <- 0L
+  testthat::local_mocked_bindings(
+    pb_upload = function(...) { upload_calls <<- upload_calls + 1L },
+    .package = "piggyback"
+  )
+
+  expect_error(publish_model_group("wp", dir), "wp_calibration")
+  expect_identical(upload_calls, 0L)   # no partial upload -- neither file goes up
+
+  # once both members are present, the group publishes atomically
+  saveRDS(list(a = 0, b = 1.2), file.path(dir, "wp_calibration.rds"))
+  uploaded <- publish_model_group("wp", dir, update_manifest = FALSE)
+  expect_setequal(uploaded, c("wp_model.rds", "wp_calibration.rds"))
+  expect_identical(upload_calls, 2L)
+})
+
 test_that("update_models_manifest treats 404 as fresh and aborts on transient errors", {
   dir <- withr::local_tempdir()
   saveRDS(1, file.path(dir, "wp_model.rds"))
