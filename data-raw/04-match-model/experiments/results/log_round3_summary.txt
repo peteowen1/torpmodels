@@ -1,0 +1,36 @@
+── ROUND 3 SUMMARY: wide-window ensemble CI ────────────────────────────────────
+
+=== Window [w2023] (n=801) ===
+C6 champion [w2023]                            MAE=25.824 RMSE=32.764 Brier=0.1882 Bits=0.1933 Slope=0.944 Cor=0.590 SDRatio=0.625 CloseMAE(n=240)=16.604
+Ensemble w=0.5 [w2023]                         MAE=25.649 RMSE=32.700 Brier=0.1882 Bits=0.1933 Slope=1.016 Cor=0.593 SDRatio=0.584 CloseMAE(n=240)=15.520
+  Ensemble vs C6: deltaMAE=-0.175 95%CI[-0.391, 0.037] deltaBrier=+0.00000 95%CI[0.00000, 0.00000]
+  CI excludes zero: FALSE
+
+  --- Per-season MAE, window [w2023] ---
+  season   n mae_c6 mae_ens  delta
+1   2023 216 25.674  25.235 -0.439
+2   2024 216 26.189  26.266  0.077
+3   2025 216 25.749  25.588 -0.161
+4   2026 153 25.629  25.450 -0.179
+
+=== Window [w2022] (n=1008) ===
+C6 champion [w2022]                            MAE=25.414 RMSE=32.370 Brier=0.1871 Bits=0.1979 Slope=0.953 Cor=0.593 SDRatio=0.622 CloseMAE(n=293)=15.996
+Ensemble w=0.5 [w2022]                         MAE=25.396 RMSE=32.424 Brier=0.1871 Bits=0.1979 Slope=1.006 Cor=0.591 SDRatio=0.588 CloseMAE(n=293)=15.299
+  Ensemble vs C6: deltaMAE=-0.018 95%CI[-0.208, 0.160] deltaBrier=+0.00000 95%CI[0.00000, 0.00000]
+  CI excludes zero: FALSE
+
+  --- Per-season MAE, window [w2022] ---
+  season   n mae_c6 mae_ens  delta
+1   2022 207 24.800  24.672 -0.128
+2   2023 216 25.222  25.143 -0.079
+3   2024 216 25.999  26.204  0.205
+4   2025 216 25.593  25.522 -0.071
+5   2026 153 25.433  25.412 -0.021
+
+=== COMPARISON TABLE (all windows) ===
+Window                n   C6 MAE  Ens MAE        deltaMAE [CI]   CI excl0   dBrier
+2025:2026 (orig)    369   25.545   25.454 -0.091 [-0.370,+0.184]         NO   0.0000
+2023:2026           801   25.824   25.649    -0.175 [-0.391,+0.037]         NO +0.00000
+2022:2026          1008   25.414   25.396    -0.018 [-0.208,+0.160]         NO +0.00000
+✔ Saved round3_summary.rds
+STAGES_EXIT=0
