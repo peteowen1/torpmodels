@@ -34,6 +34,101 @@ test_that("default_training_seasons excludes the in-progress season", {   # F4
   expect_identical(min(env$default_training_seasons()), 2021L)
 })
 
+# -----------------------------------------------------------------------
+# BUG 1 regression. Investigation finding: `na.action = na.pass` passed to
+# `stats::model.matrix()` is actually INERT -- `na.action` is not a formal
+# argument of `model.matrix.default()` (verified via
+# `names(formals(stats:::model.matrix.default))`), so it's swallowed by
+# `...` and model.matrix() falls back to `getOption("na.action")`
+# (na.omit), which DROPS the NA row exactly like the deleted standalone
+# trainers' implicit default did. Repro: `model.matrix(~.+0, data =
+# data.frame(a=1:5, b=c(1,2,NA,4,5)), na.action = na.pass)` returns 4 rows,
+# not 5 -- identical to na.action = na.omit.
+#
+# Consequence: fit_ep()/fit_wp() were NOT actually exposed --
+# stopifnot(nrow(X) == nrow(vars)) already catches the row-drop today (a
+# real assertion failure, not dead code). abort_on_feature_na() is added
+# BEFORE model.matrix(), on the source dataframe, so (a) the abort message
+# names the offending columns instead of failing an opaque nrow assertion,
+# and (b) it stays correct if model.matrix()'s na-handling ever gets fixed
+# to genuinely honor na.pass (which would make the nrow stopifnot
+# permanently true and blind). score_wp_rows() had NO stopifnot backstop --
+# that was the one actually-silent exposure (feeds the WP release gate via
+# fit_wp_temporal_variant()); it gets the same guard.
+#
+# These tests MUST run before "insample EP source forces upload = FALSE"
+# below (and anything after it) -- that test permanently reassigns
+# env$fit_wp to a mock (plain `env$fit_wp <- ...`, not
+# local_mocked_bindings, so nothing restores it at test_that() boundaries).
+# -----------------------------------------------------------------------
+
+test_that("model.matrix(na.action = na.pass) does not actually preserve NA rows (documents the investigation finding)", {
+  df <- data.frame(a = 1:5, b = c(1, 2, NA, 4, 5))
+  X <- stats::model.matrix(~ . + 0, data = df, na.action = na.pass)
+  expect_identical(nrow(X), 4L)   # NOT 5L -- na.action is silently ignored here
+})
+
+test_that("abort_on_feature_na is silent when the feature dataframe has no NAs", {
+  df <- data.frame(a = 1:3, b = 4:6)
+  expect_silent(env$abort_on_feature_na(df, "EP"))
+})
+
+test_that("abort_on_feature_na aborts and names/counts every offending column", {
+  df <- data.frame(a = c(1, 2, 3, 4), b = c(1, NA, 3, 4), c = c(1, 2, NA, NA))
+  expect_error(env$abort_on_feature_na(df, "EP"), "EP features have NAs")
+  expect_error(env$abort_on_feature_na(df, "EP"), "b: 1 NA row")
+  expect_error(env$abort_on_feature_na(df, "EP"), "c: 2 NA rows")
+})
+
+test_that("fit_ep aborts loudly with a clear per-column message when a feature has NAs", {
+  skip_if_not_installed("torp")
+  n <- 20
+  vars <- as.data.frame(matrix(0, n, length(torp:::EPV_MODEL_FEATURES)))
+  names(vars) <- torp:::EPV_MODEL_FEATURES
+  vars$period_seconds[3] <- NA_real_
+
+  fake_epv <- vars
+  fake_epv$label_ep <- rep(0:4, length.out = n)
+  fake_epv$torp_match_id <- rep(1:4, each = 5)
+
+  expect_error(env$fit_ep(fake_epv), "EP features have NAs")
+  expect_error(env$fit_ep(fake_epv), "period_seconds: 1 NA row")
+})
+
+test_that("fit_wp aborts loudly with a clear per-column message when a feature has NAs", {
+  skip_if_not_installed("torp")
+  n <- 20
+  vars <- as.data.frame(matrix(0, n, length(torp:::WP_MODEL_FEATURES)))
+  names(vars) <- torp:::WP_MODEL_FEATURES
+  vars$score_urgency[c(1, 5)] <- NA_real_
+
+  fake_wp <- vars
+  fake_wp$label_wp <- rep(c(0, 1), length.out = n)
+  fake_wp$torp_match_id <- rep(1:4, each = 5)
+
+  expect_error(env$fit_wp(fake_wp), "WP features have NAs")
+  expect_error(env$fit_wp(fake_wp), "score_urgency: 2 NA rows")
+})
+
+test_that("score_wp_rows aborts loudly on an EP feature NA -- the path with no stopifnot backstop", {
+  skip_if_not_installed("torp")
+  n <- 10
+  vars <- as.data.frame(matrix(0, n, length(torp:::EPV_MODEL_FEATURES)))
+  names(vars) <- torp:::EPV_MODEL_FEATURES
+  vars$home[2] <- NA_real_
+
+  epv_rows <- vars
+  epv_rows$match_id <- rep(1:2, each = 5)
+  epv_rows$torp_match_id <- epv_rows$match_id
+  epv_rows$points_diff <- 0
+  epv_rows$est_match_elapsed <- 0
+  epv_rows$label_wp <- rep(c(0, 1), 5)
+
+  # ep_model/wp_model are never reached -- the abort fires before predict()
+  expect_error(env$score_wp_rows(epv_rows, ep_model = NULL, wp_model = NULL),
+              "EP \\(score_wp_rows\\) features have NAs")
+})
+
 test_that("insample EP source forces upload = FALSE", {
   skip_if_not_installed("torp")
 
@@ -134,6 +229,28 @@ test_that("wp_gate_slope q4close: keeps the LAST row per (match_id, bucket), not
   expected <- unname(stats::coef(stats::glm(c(0, 1) ~ stats::qlogis(c(0.15, 0.85)),
                                             family = stats::binomial()))[2])
   expect_equal(got, expected, tolerance = 1e-6)
+})
+
+test_that("wp_gate_slope q4close excludes NA period/points_diff rows instead of phantom-injecting them (BUG 2)", {
+  # m1 is the only genuine cell member. m2 has NA period, m3 has NA
+  # points_diff -- under NA-unsafe `[` subsetting these produce a logical NA
+  # that INJECTS an all-NA row per NA-flagged row rather than dropping it;
+  # those phantom rows share match_id = NA and bucket = NA so dplyr's
+  # group_by/dedup collapses them into one extra phantom group, inflating
+  # the deduped n from 1 to 2. wp_cell_flag()'s NA -> FALSE guard must drop
+  # m2/m3 entirely so n reflects only the real m1 row.
+  meta <- data.frame(
+    match_id = c("m1", "m2", "m3"),
+    period = c(4, NA, 4),
+    points_diff = c(5, 5, NA),
+    est_match_elapsed = c(3300, 3300, 3300)
+  )
+  preds  <- c(0.9, 0.5, 0.5)
+  labels <- c(1,   1,   0)
+
+  det <- env$wp_gate_slope(preds, labels, meta, cell = "q4close", detail = TRUE)
+  expect_identical(det$n, 1L)
+  expect_true(is.na(det$slope))   # single real row -> degenerate, not an NA-row GLM fit
 })
 
 test_that("fit_wp_calibration recovers a known (a, b) and drops draw rows", {
@@ -466,6 +583,71 @@ test_that("calibrate = TRUE (default): fits + gates + saves wp_calibration.rds a
   expect_identical(saved_calib$n_fit_half_matches + saved_calib$n_gate_half_matches, 4L)
   expect_true(is.finite(saved_calib$max_boundary_jump))
   expect_equal(saved_calib$max_boundary_jump, 0)   # global form: no cell boundary
+})
+
+test_that("a score_wp_rows() abort inside the report-only in-progress-season diagnostic is caught, not propagated", {
+  # score_wp_rows() now aborts loudly on a feature NA (abort_on_feature_na()).
+  # That's correct for its gate-season caller in fit_wp_temporal_variant(),
+  # but the in-progress-season check is explicitly "report-only, not
+  # gated" -- an abort there must be caught and warned, not crash the run
+  # after wp_calibration.rds is already saved and before wp_model.rds is.
+  skip_if_not_installed("torp")
+  fake_epv <- .fake_epv_for_wiring_tests()
+
+  env$load_training_pbp <- function(seasons) fake_epv
+  env$fit_ep <- function(model_data_epv, ...) {
+    list(model = "MOCK_EP", optimal_nrounds = 1L, cv_logloss = 0.1,
+        X = matrix(0, nrow(model_data_epv), 1), y = rep(0, nrow(model_data_epv)),
+        folds = list(seq_len(nrow(model_data_epv))))
+  }
+  env$cv_ep_oos_preds <- function(...) matrix(0.2, nrow(fake_epv), 5)
+  env$build_wp_data <- function(model_data_epv, oos_ep_preds) model_data_epv
+  env$fit_wp <- function(model_data_wp, ...) {
+    list(model = "MOCK_WP", optimal_nrounds = 1L, cv_logloss = 0.2,
+        X = matrix(0, nrow(model_data_wp), 1), y = rep(0, nrow(model_data_wp)),
+        folds = list(seq_len(nrow(model_data_wp))))
+  }
+
+  fake_meta <- data.frame(period = 4L, points_diff = 0, est_match_elapsed = 0, match_id = 1:4)
+  env$fit_wp_temporal_variant <- function(...) {
+    list(preds = rep(0.6, 4), labels = c(0, 1, 0, 1), meta_cols = fake_meta)
+  }
+  env$fit_wp_calibration <- function(preds, labels, ...) {
+    list(a = 0, b = 1.2, a_q4c = 0, b_q4c = 0, form = "global")
+  }
+  env$wp_gate_slope <- function(preds, labels, meta_cols, cell, detail = FALSE) {
+    if (detail) list(slope = 1.0, se = 0.05, n = 200) else 1.0
+  }
+  env$validate_wp_temporal_slope <- function(...) {
+    list(slope_all = 1.0, slope_q4close = 1.0, se_q4close = 0.05, n_q4close = 200)
+  }
+  env$cv_wp_oos_preds <- function(...) rep(0.5, 4)
+  # Simulates a real abort_on_feature_na() firing on live in-progress data.
+  env$score_wp_rows <- function(...) cli::cli_abort("simulated abort_on_feature_na() firing")
+
+  # Non-empty in-progress chains -> the diagnostic branch runs (not the
+  # "no rows available yet" one) and hits the simulated abort.
+  testthat::local_mocked_bindings(load_chains = function(...) data.frame(x = 1), .package = "torp")
+  testthat::local_mocked_bindings(clean_pbp = function(df) df, .package = "torp")
+  testthat::local_mocked_bindings(clean_model_data_epv = function(df) df, .package = "torp")
+  testthat::local_mocked_bindings(
+    build_model_meta = function(model_name, ...) list(model = model_name),
+    stamp_model_meta = function(object, meta) { attr(object, "torp_meta") <- meta; object },
+    publish_model_group = function(...) invisible(NULL),
+    .package = "torpmodels"
+  )
+
+  out_dir <- withr::local_tempdir()
+  expect_warning(
+    result <- env$train_core_models(models = "wp", seasons = 2021:2024, upload = FALSE,
+                                    wp_ep_source = "cv", output_dir = out_dir),
+    "diagnostic failed"
+  )
+  # the run completed anyway -- both artifacts saved, not aborted mid-run
+  expect_true(file.exists(file.path(out_dir, "wp_calibration.rds")))
+  expect_true(file.exists(file.path(out_dir, "wp_model.rds")))
+  expect_identical(result$wp_calibration$model, "wp_calibration")
+  expect_identical(result$wp$model, "wp")
 })
 
 test_that("slope_gate = FALSE warns loudly but never calls validate_wp_temporal_slope", {

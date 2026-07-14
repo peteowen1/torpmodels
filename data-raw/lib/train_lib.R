@@ -75,6 +75,66 @@ make_match_folds <- function(match_ids, k = 5L, seed = 1234L) {
   match_fold_map[match_ids]
 }
 
+#' Abort loudly if EP/WP training features contain NAs
+#'
+#' `na.action = na.pass` in [fit_ep()]/[fit_wp()]/[score_wp_rows()] was
+#' meant (torpverse/docs/plans/TRAINING-CONSOLIDATION-PLAN.md
+#' \enc{§}{Section}1.5, "Model-matrix decision") to keep every row aligned
+#' through `stats::model.matrix()`. It's actually inert: `na.action` is not
+#' a formal argument of `stats:::model.matrix.default()` (it has only
+#' `object, data, contrasts.arg, xlev, ...`), so it's silently swallowed by
+#' `...` and `model.matrix()` falls back to `getOption("na.action")`
+#' (`na.omit` by default) -- which DROPS the NA row from the returned
+#' matrix, exactly like the deleted standalone trainers
+#' (`train_ep_model.R`/`train_wp_model.R`, git history retains them) did
+#' with their implicit default. Verified empirically: `model.matrix(~ . + 0,
+#' data = df, na.action = na.pass)` on a 5-row frame with one NA returns 4
+#' rows, identical to `na.action = na.omit`; only pre-building the
+#' model.frame with `na.action = na.pass` and passing THAT to
+#' `model.matrix()` actually preserves the row.
+#'
+#' Consequence: in [fit_ep()]/[fit_wp()] the row-drop is still caught --
+#' `stopifnot(nrow(X) == nrow(vars))` fires immediately after
+#' `model.matrix()` -- so those callers were never actually exposed (a
+#' feature NA aborts training today, just via an opaque assertion message).
+#' This check runs BEFORE `model.matrix()`, directly on the source
+#' dataframe, so the abort names the offending columns instead of just
+#' failing an assertion, and so it stays correct if `model.matrix()`'s
+#' na-handling is ever "fixed" to actually honor `na.pass` (which would
+#' make the post-hoc `nrow` stopifnot permanently true and blind). In
+#' [score_wp_rows()], however, there is NO such stopifnot -- a feature NA
+#' there silently drops a row from `X_ep`/`X_wp`, so `predict()` returns
+#' fewer rows than `epv_rows`, and [build_wp_data()] recycles the short
+#' vector against the full-length frame with no error. That path (which
+#' feeds the gate-season score in [fit_wp_temporal_variant()], i.e. the WP
+#' release gate) was the one actually exposed; this guard closes it.
+#'
+#' `clean_model_data_epv()`/`clean_model_data_wp()` are designed to leave
+#' every `EPV_MODEL_FEATURES`/`WP_MODEL_FEATURES` column fully populated
+#' (boundary lag NAs filled via locf/nocb/first/last, `speed1`/`speed5`
+#' NaNs zeroed -- see `torp/R/clean_features.R`), and no feature column
+#' here is documented as intentionally missing. So any NA reaching this
+#' point means upstream cleaning regressed, not a deliberate xgboost
+#' missing-value signal.
+#'
+#' @param vars Feature dataframe, pre-`model.matrix()` (e.g. the output of
+#'   `select_epv_model_vars()`/`select_wp_model_vars()`).
+#' @param model_label Character, prefixes the abort message (e.g. `"EP"`).
+#' @keywords internal
+abort_on_feature_na <- function(vars, model_label) {
+  na_counts <- vapply(vars, function(col) sum(is.na(col)), integer(1))
+  bad <- na_counts[na_counts > 0]
+  if (length(bad) == 0) return(invisible(NULL))
+
+  bullets <- paste0(names(bad), ": ", bad, " NA row", ifelse(bad == 1, "", "s"))
+  names(bullets) <- rep("x", length(bullets))
+  cli::cli_abort(c(
+    "{model_label} features have NAs in {length(bad)} column{?s} -- clean_pbp()/clean_model_data_epv()/clean_model_data_wp() are designed to leave these columns fully populated, so this looks like a data-cleaning regression upstream, not intentional xgboost missingness",
+    bullets,
+    "i" = "If an NA here is genuinely intentional (a new xgboost-missing signal), update this guard rather than silently ignoring it."
+  ))
+}
+
 #' Fit the EP model with match-grouped CV to pick nrounds
 #'
 #' @param model_data_epv Output of [load_training_pbp()].
@@ -84,6 +144,7 @@ make_match_folds <- function(match_ids, k = 5L, seed = 1234L) {
 #' @keywords internal
 fit_ep <- function(model_data_epv, params = ep_params(), nrounds_max = 500L) {
   epv_vars <- model_data_epv |> torp:::select_epv_model_vars()
+  abort_on_feature_na(epv_vars, "EP")
   X <- stats::model.matrix(~ . + 0, data = epv_vars, na.action = na.pass)
   stopifnot(nrow(X) == nrow(epv_vars))
   stopifnot(identical(colnames(X), torp:::EPV_MODEL_FEATURES))
@@ -200,6 +261,7 @@ validate_wp_spec <- function(X, params) {
 #' @keywords internal
 fit_wp <- function(model_data_wp, params = wp_params(), nrounds_max = 500L) {
   wp_vars <- model_data_wp |> torp:::select_wp_model_vars()
+  abort_on_feature_na(wp_vars, "WP")
   X <- stats::model.matrix(~ . + 0, data = wp_vars, na.action = na.pass)
   stopifnot(nrow(X) == nrow(wp_vars))
   stopifnot(identical(colnames(X), torp:::WP_MODEL_FEATURES))
@@ -293,6 +355,7 @@ cv_wp_oos_preds <- function(X, y, folds, params, nrounds) {
 #' @keywords internal
 score_wp_rows <- function(epv_rows, ep_model, wp_model) {
   epv_vars <- epv_rows |> torp:::select_epv_model_vars()
+  abort_on_feature_na(epv_vars, "EP (score_wp_rows)")
   X_ep <- stats::model.matrix(~ . + 0, data = epv_vars, na.action = na.pass)
   ep_preds <- predict(ep_model, X_ep)
   if (!is.matrix(ep_preds)) ep_preds <- matrix(ep_preds, ncol = 5, byrow = TRUE)
@@ -300,6 +363,7 @@ score_wp_rows <- function(epv_rows, ep_model, wp_model) {
 
   wp_data <- build_wp_data(epv_rows, ep_preds)
   wp_vars <- wp_data |> torp:::select_wp_model_vars()
+  abort_on_feature_na(wp_vars, "WP (score_wp_rows)")
   X_wp <- stats::model.matrix(~ . + 0, data = wp_vars, na.action = na.pass)
   preds <- predict(wp_model, X_wp)
   if (is.matrix(preds)) preds <- as.vector(preds)
@@ -592,7 +656,7 @@ wp_gate_slope <- function(preds, labels, meta_cols, cell = c("q4close", "all"),
   d <- d[d$label_wp %in% c(0, 1), ]
 
   if (cell == "q4close") {
-    d <- d[d$period == 4 & abs(d$points_diff) <= 12, ]
+    d <- d[wp_cell_flag(d), ]
     d$bucket <- pmin(4, pmax(0, d$est_match_elapsed %/% 300 - 11))
     d <- d |>
       dplyr::group_by(.data$match_id, .data$bucket) |>
@@ -972,12 +1036,23 @@ train_core_models <- function(models = c("ep", "wp", "shot"),
       if (is.null(ip_chains) || nrow(ip_chains) == 0) {
         cli::cli_inform("[report-only, not gated] In-progress season {in_progress_season}: no rows available yet")
       } else {
-        ip_epv <- torp::clean_pbp(ip_chains) |> torp:::clean_model_data_epv()
-        ip_scored <- score_wp_rows(ip_epv, ep_fit$model, wp_fit$model)
-        ip_preds_cal <- apply_wp_calibration(ip_scored$preds, calib, wp_cell_flag(ip_scored$meta_cols))
-        cli::cli_inform(
-          "[report-only, not gated] In-progress season {in_progress_season}: calibrated slope all = {round(wp_gate_slope(ip_preds_cal, ip_scored$labels, ip_scored$meta_cols, 'all'), 3)}, q4close = {round(wp_gate_slope(ip_preds_cal, ip_scored$labels, ip_scored$meta_cols, 'q4close'), 3)} (n = {length(ip_scored$labels)})"
-        )
+        # tryCatch, not left to propagate: this diagnostic is explicitly
+        # "report-only, not gated" (D2/D5) -- score_wp_rows() now aborts
+        # loudly on a feature NA (see abort_on_feature_na()), which is the
+        # right behavior for the gate-season call in
+        # fit_wp_temporal_variant() but would wrongly turn THIS non-gating
+        # diagnostic into a hard failure mid-run, after wp_calibration.rds
+        # has already been saved and before wp_model.rds is.
+        tryCatch({
+          ip_epv <- torp::clean_pbp(ip_chains) |> torp:::clean_model_data_epv()
+          ip_scored <- score_wp_rows(ip_epv, ep_fit$model, wp_fit$model)
+          ip_preds_cal <- apply_wp_calibration(ip_scored$preds, calib, wp_cell_flag(ip_scored$meta_cols))
+          cli::cli_inform(
+            "[report-only, not gated] In-progress season {in_progress_season}: calibrated slope all = {round(wp_gate_slope(ip_preds_cal, ip_scored$labels, ip_scored$meta_cols, 'all'), 3)}, q4close = {round(wp_gate_slope(ip_preds_cal, ip_scored$labels, ip_scored$meta_cols, 'q4close'), 3)} (n = {length(ip_scored$labels)})"
+          )
+        }, error = function(e) {
+          cli::cli_warn("[report-only, not gated] In-progress season {in_progress_season}: diagnostic failed ({conditionMessage(e)}) -- skipping (never gates the release)")
+        })
       }
     } else {
       cli::cli_alert_warning("WP calibration skipped (calibrate = FALSE or wp_ep_source = 'insample') -- shipping uncalibrated WP model, local-only")
