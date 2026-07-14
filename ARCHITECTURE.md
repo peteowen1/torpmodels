@@ -11,10 +11,9 @@ torpmodels has no data processing logic and no runtime dependency on torp. The r
 ```mermaid
 graph TB
     subgraph Training["Model Training (data-raw/)"]
-        EP_TRAIN["01-ep-model/<br/>train_ep_model.R"]
-        WP_TRAIN["02-wp-model/<br/>train_wp_model.R"]
-        SHOT_TRAIN["03-shot-model/<br/>train_shot_model.R"]
-        MATCH_TRAIN["04-match-model/<br/>train_match_models.R"]
+        TRAIN_CLI["train_models.R<br/>(ep, wp, shot)"]
+        TRAIN_LIB["lib/train_lib.R<br/>fit_ep/fit_wp/fit_shot"]
+        MATCH_TRAIN["run_predictions_pipeline()<br/>(torp, sole match-GAM publisher)"]
     end
 
     subgraph GH["GitHub Releases"]
@@ -33,9 +32,8 @@ graph TB
         PREDICT["Match predictions<br/>(run_predictions_pipeline)"]
     end
 
-    EP_TRAIN --> CORE
-    WP_TRAIN --> CORE
-    SHOT_TRAIN --> CORE
+    TRAIN_CLI --> TRAIN_LIB
+    TRAIN_LIB --> CORE
     MATCH_TRAIN --> CORE
 
     CORE --> LOAD
@@ -54,6 +52,7 @@ graph TB
 |-------|-------|------|---------|------|
 | `ep_model.rds` | `ep` | XGBoost (multiclass, 5 classes) | Expected Points from field position | 794 KB |
 | `wp_model.rds` | `wp` | XGBoost (binary logistic) | Win Probability from game state | 319 KB |
+| `wp_calibration.rds` | `wp_calibration` | Two-parameter Platt-on-logit (`list(a, b)`) | WP temporal recalibration sidecar ([`../docs/plans/FABLE-RECAL-PLAN.md`](../docs/plans/FABLE-RECAL-PLAN.md)) -- published/loaded atomically with `wp` | <1 KB |
 | `shot_ocat_mdl.rds` | `shot` | GAM (ordered categorical, 3 levels) | Shot outcome: miss/behind/goal | 19 MB |
 | `match_gams.rds` | `match_gams` | GAM pipeline (5 sequential) | Match predictions: xPoints -> score diff -> win prob | 38 MB |
 | `shot_player_df.rds` | `shot_player_df` | Lookup table | Player ID to lumped factor mapping for shot model | 7.5 KB |
@@ -104,13 +103,13 @@ Individual player statistic projection models loaded via `load_stat_model()`:
 ```
 
 **Download Pipeline**:
-1. Check local cache
-2. If miss: try `piggyback::pb_download()` (preferred)
+1. Check local cache; if present, validate against `models_manifest.json` (sha256 sidecar via `vb_cache_validate()`, fetched at most once per tag per 15-minute session window) when the tag's manifest tracks this file -- no manifest on the tag at all (e.g. `stat-models`, as of this writing) or no entry for this file falls back to existence-only legacy behaviour, plus one session-wide warning
+2. On a cache miss or a stale cache: try `piggyback::pb_download()` (preferred)
 3. Fallback: direct GitHub URL `https://github.com/peteowen1/torpmodels/releases/download/{tag}/{file}`
-4. Validate file size > 1000 bytes (detect error pages)
-5. Cache locally for future loads
+4. Verify sha256 against the manifest entry when available; otherwise fall back to the legacy file-size > 1000 bytes heuristic (detects error pages)
+5. Atomic move into the cache path (tempfile beside the destination, then rename) with a `.sha256` sidecar written alongside; a failed integrity check deletes the temp and retries the same method once before falling through to the next method, and never touches a pre-existing cached file
 
-**Error Handling**: `safe_read_rds()` detects RDS corruption ("unknown input format", "decompression" errors), auto-deletes corrupted files to force re-download, but preserves cache on environment errors (missing packages, OOM).
+**Error Handling**: `safe_read_rds()` detects RDS corruption ("unknown input format", "decompression" errors), auto-deletes the corrupted file *and* its `.sha256` sidecar to force a clean re-download, but preserves cache on environment errors (missing packages, OOM).
 
 ---
 
@@ -118,7 +117,7 @@ Individual player statistic projection models loaded via `load_stat_model()`:
 
 **Purpose**: Train all production models. Lives in `data-raw/` and is not part of the installed package.
 
-**Training Order** (EP must be first -- WP uses EP predictions as features):
+**Training Order** (EP must be first -- WP uses EP predictions as features; `train_core_models()` in `lib/train_lib.R` enforces this):
 
 ```mermaid
 graph LR
@@ -129,19 +128,30 @@ graph LR
 
 | Stage | Directory | Script | Data Source |
 |-------|-----------|--------|-------------|
-| EP model | `data-raw/01-ep-model/` | `train_ep_model.R` | `torp::load_chains()` + `torp::clean_model_data_epv()` |
-| Live EP model | `data-raw/01-ep-model/` | `train_ep_model_live.R` | Same data, 8-feature subset → JSON for Worker |
-| WP model | `data-raw/02-wp-model/` | `train_wp_model.R` | PBP with EP predictions |
-| Shot model | `data-raw/03-shot-model/` | `train_shot_model.R` | Shot-specific PBP data |
-| Match models | `data-raw/04-match-model/` | `train_match_models.R` | `torp::build_team_mdl_df()` |
-| Live WP model | `data-raw/05-live-wp-model/` | `train_live_wp_model.R` | PBP data → GAM lookup JSON for browser |
+| EP / WP / shot models | `data-raw/` | `train_models.R` (CLI) → `lib/train_lib.R` (`fit_ep`/`fit_wp`/`fit_shot`) | `torp::load_chains()` + `torp:::clean_model_data_epv()`; shot uses `torp::load_pbp()` |
+| Live EP model | `data-raw/01-ep-model/` | `train_ep_model_live_v2.R` | Same PBP data, 13-feature subset → JSON for Worker |
+| Match models | `data-raw/04-match-model/` | `train_match_models.R` (eval only) + `torp::run_predictions_pipeline()` (sole publisher) | `torp::build_team_mdl_df()` |
+| Live WP model | `data-raw/05-live-wp-model/` | `train_live_wp_chain_v4.R` / `train_live_wp_model.R` | PBP data → GAM lookup JSON for browser |
 
-**Release Process** (manual):
-```r
-piggyback::pb_upload("ep_model.rds", repo = "peteowen1/torpmodels", tag = "core-models")
-```
+**Release Process**: `train_models.R` calls `publish_model_group()` internally (atomic per model group, updates `models_manifest.json`). Manual/ad-hoc uploads should still go through `publish_model_group()` rather than a bare `piggyback::pb_upload()`, so the manifest ledger stays accurate.
+
+**WP Recalibration + Temporal Slope Gate** ([`../docs/plans/FABLE-RECAL-PLAN.md`](../docs/plans/FABLE-RECAL-PLAN.md)): the canonical WP model is well-calibrated on random-CV but runs flat on temporal (recent-season) holdout. `train_core_models()`'s WP branch fits a `fit_wp_temporal_variant()` (EP+WP trained on seasons strictly before the last completed season, scored on that held-out season -- the honest OOS check), fits a two-parameter Platt-on-logit calibration on it (`fit_wp_calibration()`), and gates the release on the calibrated slope in both the Q4/close cell and all-rows (`validate_wp_temporal_slope()`, `|slope - 1| <= 0.10`) -- a breach `cli::cli_abort()`s before anything is written or published. On a pass, the fitted `(a, b)` ships as `wp_calibration.rds`, atomic with `wp_model.rds` via `.MODEL_GROUPS$wp`. `train_models.R --skip-slope-gate` (emergencies only) and `--no-calibrate` (skips the whole layer, forces `--no-upload`) are escape hatches. torp applies the calibration at serve time in `get_wp_preds()`, with an identity fallback when the sidecar is absent -- see `torp/ARCHITECTURE.md` and `torp/CLAUDE.md`.
 
 **Important**: The `match_gams.rds` in GitHub Releases is an evaluation reference model. Production match predictions are retrained daily via `torp/data-raw/02-models/build_match_predictions.R`.
+
+---
+
+### Provenance & Manifest
+
+**Purpose**: Make a silent overwrite (like the March→June `wp_model.rds` swap, where a CV-EP model shipped in March was silently replaced in June) detectable by inspection instead of forensics.
+
+**`torp_meta` attribute** (`R/model_meta.R`): every model trained through `train_core_models()` (and every match-GAM upload from `run_predictions_pipeline()`) is stamped via `stamp_model_meta()` before `saveRDS()`. RDS round-trips arbitrary attributes, so this survives cache downloads. Fields: `model`, `schema_version`, `trained_at`, `script`, `seasons`, `n_rows`/`n_matches`, `params` (including the derived WP `monotone_constraints`), `feature_names`, `cv_metric`, `torp_sha`/`torpmodels_sha`, package + R + xgboost versions. `load_torp_model()` prints the stamp (`describe_model_meta()`) when `verbose = TRUE`, and warns -- never hard-fails -- when a loaded model has no stamp (pre-provenance artifact or a non-canonical publish path).
+
+**`models_manifest.json`** (`R/publish.R`): a release-level ledger asset on the `core-models` tag, updated by `update_models_manifest()` after every `publish_model_group()` call. Read-modify-write: a 404 on download means "start fresh"; any other download error aborts rather than risking a clobber. Each artifact entry carries `sha256`, `size`, `uploaded_at`, and a meta subset (model/script/seasons/SHAs/`params_hash`/`cv_metric`); the previous entry moves onto that artifact's `history` (capped at 20). The manifest itself uploads *last*, so artifacts always land before the ledger claims them.
+
+**`publish_model_group()`**: atomic per model group (`.MODEL_GROUPS`: `ep`, `wp` = `c(wp_model.rds, wp_calibration.rds)`, `shot` = `c(shot_ocat_mdl.rds, shot_player_df.rds)`, `match` = `c(match_gams.rds, match_xgb_pipeline.rds)`). Aborts before any upload if a group member is missing from the output directory -- the fix for the shot model shipping without its `shot_player_df` sidecar, and (as of [`../docs/plans/FABLE-RECAL-PLAN.md`](../docs/plans/FABLE-RECAL-PLAN.md)) the same guarantee for `wp_calibration.rds`: a WP model can never publish without its recalibration sidecar, so a consumer can never see a `wp_model.rds` update without the paired calibration also being current.
+
+**`check_manifest_sync()`**: ad hoc drift detector. Compares each release asset's `updated_at`/`size` (via `gh api`) against its manifest record; reports any asset newer/different-size than its manifest entry ("uploaded outside the canonical path") and any manifest entry with no matching asset.
 
 ---
 
@@ -150,15 +160,16 @@ piggyback::pb_upload("ep_model.rds", repo = "peteowen1/torpmodels", tag = "core-
 | File | Purpose | Key Symbols |
 |------|---------|-------------|
 | `R/load_model.R` | All model loading, caching, and management | `load_torp_model()`, `load_stat_model()`, `list_available_models()`, `check_model_cache()`, `clear_model_cache()` |
+| `R/model_meta.R` | Provenance metadata | `build_model_meta()`, `stamp_model_meta()`, `model_meta()`, `describe_model_meta()` |
+| `R/publish.R` | Atomic publish + manifest ledger | `publish_model_group()`, `update_models_manifest()`, `check_manifest_sync()` |
 | `R/torpmodels-package.R` | Package-level documentation | (roxygen2 docs only) |
-| `data-raw/01-ep-model/train_ep_model.R` | EP model training | XGBoost multiclass (5 EP outcome classes) |
-| `data-raw/02-wp-model/train_wp_model.R` | WP model training | XGBoost binary logistic |
-| `data-raw/02-wp-model/train_wp_model_cv_ep.R` | WP with cross-validated EP | True out-of-sample evaluation |
-| `data-raw/03-shot-model/train_shot_model.R` | Shot outcome model training | `mgcv::gam()` ordered categorical |
-| `data-raw/04-match-model/train_match_models.R` | Match prediction models | 5-model sequential GAM pipeline |
-| `data-raw/01-ep-model/train_ep_model_live.R` | Live EP model training | 8-feature XGBoost → JSON tree structure for Worker inference |
-| `data-raw/05-live-wp-model/train_live_wp_model.R` | Live WP model training | GAM → JSON lookup table for browser |
+| `data-raw/train_models.R` | THE canonical EP/WP/shot training CLI | Arg parsing, `devtools::load_all()` of dev torp + torpmodels, delegates to `lib/train_lib.R` |
+| `data-raw/lib/train_lib.R` | Fitting functions shared by `train_models.R` and rebuild Phase 4 | `fit_ep()`, `fit_wp()`, `fit_shot()`, `train_core_models()`, `wp_params()` (derives `monotone_constraints` from `torp:::WP_MODEL_FEATURES`); WP recalibration + slope gate: `fit_wp_temporal_variant()`, `fit_wp_calibration()`, `wp_gate_slope()`, `validate_wp_temporal_slope()`, `cv_wp_oos_preds()` |
+| `data-raw/02-wp-model/validate_cv_ep_wp.R` | Compares in-sample vs CV-EP WP training | Sources `lib/train_lib.R` for shared plumbing |
+| `data-raw/04-match-model/train_match_models.R` | Rolling out-of-sample match-model evaluation | 5-model sequential GAM pipeline, evaluation only (no production save) |
 | `tests/testthat/test-load_model.R` | Test suite (17 test_that blocks) | Name normalization, cache ops, corruption recovery |
+| `tests/testthat/test-model_meta.R` | Provenance stamping/round-trip tests | `build_model_meta()`, `stamp_model_meta()`, `load_torp_model()` warn/describe behavior |
+| `tests/testthat/test-publish.R` | Atomic publish/manifest tests | F3 (partial group) regression, manifest 404-vs-transient handling |
 
 ## Known Gotchas
 
@@ -166,8 +177,8 @@ piggyback::pb_upload("ep_model.rds", repo = "peteowen1/torpmodels", tag = "core-
 |-------|--------|----------|
 | XGBoost version incompatibility | RDS models may fail to load across XGBoost versions | `load_torp_model("ep", force_download = TRUE)` |
 | Shot model requires mgcv loaded | `predict()` fails without `library(mgcv)` (internal `Xbd` function) | Always `library(mgcv)` before shot predictions |
-| WP trained on in-sample EP | WP cross-validation metrics ~1-2% optimistic | Use `train_wp_model_cv_ep.R` for true OOS eval |
-| match_gams.rds is evaluation-only | Not the production model (production retrained daily) | Production uses `torp::run_predictions_pipeline()` |
+| WP trained on in-sample EP | Metrics ~1-2% optimistic vs true OOS | `train_models.R` defaults to CV-EP (`wp_ep_source = "cv"`); `--insample-ep` is legacy comparison only and never uploads |
+| match_gams.rds is evaluation-only | Not the production model (production retrained daily) | Production uses `torp::run_predictions_pipeline()` (sole match-GAM publisher) |
 
 ## Glossary
 

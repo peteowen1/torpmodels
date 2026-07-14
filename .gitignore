@@ -21,3 +21,4 @@ debug/
 # Claude Code files
 .claude/
 .positai
+data-raw/05-live-wp-model/wp-model-chain.json

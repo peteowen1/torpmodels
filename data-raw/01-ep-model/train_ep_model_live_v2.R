@@ -17,14 +17,22 @@ library(data.table)
 # Load torp
 torp_paths <- c("../../torp", "../torp", "../../../torp")
 loaded <- FALSE
+torp_path <- NA_character_
 for (p in torp_paths) {
   if (file.exists(file.path(p, "DESCRIPTION"))) {
     devtools::load_all(p)
     loaded <- TRUE
+    torp_path <- p
     break
   }
 }
 if (!loaded) stop("Cannot find torp package.")
+
+torp_sha <- tryCatch(
+  system2("git", c("-C", torp_path, "rev-parse", "--short", "HEAD"), stdout = TRUE, stderr = FALSE),
+  error = function(e) NA_character_
+)
+if (length(torp_sha) != 1 || !nzchar(torp_sha)) torp_sha <- NA_character_
 
 # ── 1. Load and prepare training data ────────────────────────
 cli::cli_inform("Loading chains data...")
@@ -120,94 +128,10 @@ cli::cli_inform("v2 optimal nrounds: {best_v2}, CV mlogloss: {round(loss_v2, 6)}
 set.seed(1234)
 model_v2 <- xgb.train(params = params, data = dm_v2, nrounds = best_v2, print_every_n = 50)
 
-# ── 6. Compare on CV metrics ────────────────────────────────
-cli::cli_inform("\n══ CV COMPARISON ══════════════════════════════════")
-cli::cli_inform("v1 (8 feat):  mlogloss = {round(loss_v1, 6)}, nrounds = {best_v1}")
-cli::cli_inform("v2 (14 feat): mlogloss = {round(loss_v2, 6)}, nrounds = {best_v2}")
-improvement <- (loss_v1 - loss_v2) / loss_v1 * 100
-cli::cli_inform("Improvement: {round(improvement, 2)}%")
-
-# Variable importance for v2
-imp <- xgb.importance(feature_names = colnames(X_v2), model = model_v2)
-cli::cli_inform("\nv2 variable importance:")
-for (i in seq_len(nrow(imp))) {
-  cli::cli_inform("  {i}. {imp$Feature[i]}: Gain={round(imp$Gain[i] * 100, 1)}%")
-}
-
-# ── 7. Compare on Daicos R6 rows ────────────────────────────
-cli::cli_inform("\n══ DAICOS R6 COMPARISON ═══════════════════════════")
-mid <- dt[season == 2026 & round_number == 6 & grepl("Carl", home_team_name)][1, match_id]
-match_dt <- dt[match_id == mid]
-cat("Match:", mid, "  Rows:", nrow(match_dt), "\n")
-
-# Score match rows with both models
-score_ep <- function(model, X) {
-  p <- predict(model, X)
-  m <- matrix(p, ncol = 5, byrow = FALSE)
-  -6 * m[, 1] - m[, 2] + m[, 3] + 6 * m[, 4]
-}
-
-mX_v1 <- model.matrix(~ . + 0, data = as.data.frame(match_dt)[, v1_vars])
-mX_v2 <- model.matrix(~ . + 0, data = as.data.frame(match_dt)[, v2_vars])
-
-match_dt[, ep_v1 := round(score_ep(model_v1, mX_v1), 3)]
-match_dt[, ep_v2 := round(score_ep(model_v2, mX_v2), 3)]
-
-# Also score with full 19-feature model for reference
-full_model <- readRDS(file.path(
-  normalizePath("~/OneDrive/Documents/torpverse/torpmodels/inst/models/core"),
-  "ep_model.rds"))
-full_vars <- select_epv_model_vars(match_dt)
-mX_full <- model.matrix(~ . + 0, data = full_vars)
-match_dt[, ep_full := round(score_ep(full_model, mX_full), 3)]
-
-# Q4 15:00-15:15
-nick_id <- "CD_I1023261"
-fmtT <- function(s) paste0(s %/% 60, ":", formatC(s %% 60, width = 2, flag = "0"))
-
-cat("\n=== Q4 15:00-15:15 ===\n")
-cat(sprintf("%-3s Q %-5s %-22s %4s %4s %3s %7s %7s %7s %7s %-6s %-6s\n",
-            "", "", "Time", "Desc", "gx", "lgx", "chn",
-            "EP_full", "EP_v1", "EP_v2", "v2-v1", "ptype", "phase"))
-q4 <- match_dt[period == 4 & period_seconds >= 895 & period_seconds <= 920]
-for (i in seq_len(nrow(q4))) {
-  r <- q4[i]
-  mk <- ifelse(r$player_id == nick_id, ">>>", "   ")
-  cat(sprintf("%s %d %-5s %-22s %4.0f %4.0f %3d %+7.3f %+7.3f %+7.3f %+7.3f %-6s %-6s\n",
-              mk, r$period, fmtT(r$period_seconds),
-              substr(r$description, 1, 22),
-              r$goal_x, r$lag_goal_x, r$chain_action_num,
-              r$ep_full, r$ep_v1, r$ep_v2, r$ep_v2 - r$ep_v1,
-              substr(as.character(r$play_type), 1, 6),
-              substr(as.character(r$phase_of_play), 1, 6)))
-}
-
-# Daicos totals
-nick <- match_dt[player_id == nick_id]
-cat(sprintf("\n=== DAICOS TOTALS (%d rows) ===\n", nrow(nick)))
-cat(sprintf("  EP_full (19 feat): cor=%.4f  mean|diff from v2|=%.3f\n",
-            cor(nick$ep_full, nick$ep_v2), mean(abs(nick$ep_full - nick$ep_v2))))
-cat(sprintf("  EP_v1   (8 feat):  cor=%.4f  mean|diff from v2|=%.3f\n",
-            cor(nick$ep_v1, nick$ep_v2), mean(abs(nick$ep_v1 - nick$ep_v2))))
-
-# Top differences v1 vs v2
-nick[, v2_minus_v1 := ep_v2 - ep_v1]
-top <- nick[order(-abs(v2_minus_v1))][1:15]
-cat("\n=== TOP 15 v2-vs-v1 DIFFERENCES ===\n")
-cat(sprintf("%-1s %-5s %-22s %7s %7s %7s %7s %-6s %-6s %4s %4s\n",
-            "Q", "Time", "Description", "EP_full", "EP_v1", "EP_v2", "v2-v1", "ptype", "phase", "gx", "lgx"))
-for (i in seq_len(nrow(top))) {
-  r <- top[i]
-  cat(sprintf("%-1d %-5s %-22s %+7.3f %+7.3f %+7.3f %+7.3f %-6s %-6s %4.0f %4.0f\n",
-              r$period, fmtT(r$period_seconds),
-              substr(r$description, 1, 22),
-              r$ep_full, r$ep_v1, r$ep_v2, r$v2_minus_v1,
-              substr(as.character(r$play_type), 1, 6),
-              substr(as.character(r$phase_of_play), 1, 6),
-              r$goal_x, r$lag_goal_x))
-}
-
-# ── 8. Save v2 model ────────────────────────────────────────
+# ── 6. Save v2 model + export JSON (moved before diagnostics, F6) ─────
+# The Daicos R6 comparison below hardcodes a specific match/season/player
+# and can break on a future re-run (e.g. no 2026 R6 Carlton game yet); the
+# shipped artifact must not depend on that diagnostic succeeding.
 output_dir <- file.path(getwd(), "inst", "models", "core")
 if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
 
@@ -225,9 +149,107 @@ export <- list(
   num_class = 5,
   class_labels = c("opp_goal", "opp_behind", "behind", "goal", "no_score"),
   num_rounds = best_v2,
-  cv_mlogloss = loss_v2
+  cv_mlogloss = loss_v2,
+  trained_on = paste0(min(dt$season), "-", max(dt$season)),
+  exported_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%S%z"),
+  torp_sha = torp_sha,
+  script = "train_ep_model_live_v2.R"
 )
 
 json_path <- file.path(output_dir, "ep_model_live_v2.json")
 jsonlite::write_json(export, json_path, auto_unbox = TRUE, pretty = FALSE)
 cli::cli_inform("Saved JSON: {json_path} ({round(file.size(json_path)/1024, 1)} KB)")
+
+# ── 7. Diagnostics (brittle -- wrapped so a failure here never undoes the save above) ──
+tryCatch({
+
+  # -- CV metric comparison --
+  cli::cli_inform("\n══ CV COMPARISON ══════════════════════════════════")
+  cli::cli_inform("v1 (8 feat):  mlogloss = {round(loss_v1, 6)}, nrounds = {best_v1}")
+  cli::cli_inform("v2 (14 feat): mlogloss = {round(loss_v2, 6)}, nrounds = {best_v2}")
+  improvement <- (loss_v1 - loss_v2) / loss_v1 * 100
+  cli::cli_inform("Improvement: {round(improvement, 2)}%")
+
+  # Variable importance for v2
+  imp <- xgb.importance(feature_names = colnames(X_v2), model = model_v2)
+  cli::cli_inform("\nv2 variable importance:")
+  for (i in seq_len(nrow(imp))) {
+    cli::cli_inform("  {i}. {imp$Feature[i]}: Gain={round(imp$Gain[i] * 100, 1)}%")
+  }
+
+  # -- Compare on Daicos R6 rows (hardcoded, one-off sanity check) --
+  cli::cli_inform("\n══ DAICOS R6 COMPARISON ═══════════════════════════")
+  mid <- dt[season == 2026 & round_number == 6 & grepl("Carl", home_team_name)][1, match_id]
+  match_dt <- dt[match_id == mid]
+  cat("Match:", mid, "  Rows:", nrow(match_dt), "\n")
+
+  # Score match rows with both models
+  score_ep <- function(model, X) {
+    p <- predict(model, X)
+    m <- matrix(p, ncol = 5, byrow = FALSE)
+    -6 * m[, 1] - m[, 2] + m[, 3] + 6 * m[, 4]
+  }
+
+  mX_v1 <- model.matrix(~ . + 0, data = as.data.frame(match_dt)[, v1_vars])
+  mX_v2 <- model.matrix(~ . + 0, data = as.data.frame(match_dt)[, v2_vars])
+
+  match_dt[, ep_v1 := round(score_ep(model_v1, mX_v1), 3)]
+  match_dt[, ep_v2 := round(score_ep(model_v2, mX_v2), 3)]
+
+  # Also score with full 19-feature model for reference
+  full_model <- readRDS(file.path(
+    normalizePath("C:/dev/torpverse/torpmodels/inst/models/core"),
+    "ep_model.rds"))
+  full_vars <- select_epv_model_vars(match_dt)
+  mX_full <- model.matrix(~ . + 0, data = full_vars)
+  match_dt[, ep_full := round(score_ep(full_model, mX_full), 3)]
+
+  # Q4 15:00-15:15
+  nick_id <- "CD_I1023261"
+  fmtT <- function(s) paste0(s %/% 60, ":", formatC(s %% 60, width = 2, flag = "0"))
+
+  cat("\n=== Q4 15:00-15:15 ===\n")
+  cat(sprintf("%-3s Q %-5s %-22s %4s %4s %3s %7s %7s %7s %7s %-6s %-6s\n",
+              "", "", "Time", "Desc", "gx", "lgx", "chn",
+              "EP_full", "EP_v1", "EP_v2", "v2-v1", "ptype", "phase"))
+  q4 <- match_dt[period == 4 & period_seconds >= 895 & period_seconds <= 920]
+  for (i in seq_len(nrow(q4))) {
+    r <- q4[i]
+    mk <- ifelse(r$player_id == nick_id, ">>>", "   ")
+    cat(sprintf("%s %d %-5s %-22s %4.0f %4.0f %3d %+7.3f %+7.3f %+7.3f %+7.3f %-6s %-6s\n",
+                mk, r$period, fmtT(r$period_seconds),
+                substr(r$description, 1, 22),
+                r$goal_x, r$lag_goal_x, r$chain_action_num,
+                r$ep_full, r$ep_v1, r$ep_v2, r$ep_v2 - r$ep_v1,
+                substr(as.character(r$play_type), 1, 6),
+                substr(as.character(r$phase_of_play), 1, 6)))
+  }
+
+  # Daicos totals
+  nick <- match_dt[player_id == nick_id]
+  cat(sprintf("\n=== DAICOS TOTALS (%d rows) ===\n", nrow(nick)))
+  cat(sprintf("  EP_full (19 feat): cor=%.4f  mean|diff from v2|=%.3f\n",
+              cor(nick$ep_full, nick$ep_v2), mean(abs(nick$ep_full - nick$ep_v2))))
+  cat(sprintf("  EP_v1   (8 feat):  cor=%.4f  mean|diff from v2|=%.3f\n",
+              cor(nick$ep_v1, nick$ep_v2), mean(abs(nick$ep_v1 - nick$ep_v2))))
+
+  # Top differences v1 vs v2
+  nick[, v2_minus_v1 := ep_v2 - ep_v1]
+  top <- nick[order(-abs(v2_minus_v1))][1:15]
+  cat("\n=== TOP 15 v2-vs-v1 DIFFERENCES ===\n")
+  cat(sprintf("%-1s %-5s %-22s %7s %7s %7s %7s %-6s %-6s %4s %4s\n",
+              "Q", "Time", "Description", "EP_full", "EP_v1", "EP_v2", "v2-v1", "ptype", "phase", "gx", "lgx"))
+  for (i in seq_len(nrow(top))) {
+    r <- top[i]
+    cat(sprintf("%-1d %-5s %-22s %+7.3f %+7.3f %+7.3f %+7.3f %-6s %-6s %4.0f %4.0f\n",
+                r$period, fmtT(r$period_seconds),
+                substr(r$description, 1, 22),
+                r$ep_full, r$ep_v1, r$ep_v2, r$v2_minus_v1,
+                substr(as.character(r$play_type), 1, 6),
+                substr(as.character(r$phase_of_play), 1, 6),
+                r$goal_x, r$lag_goal_x))
+  }
+
+}, error = function(e) {
+  cli::cli_warn("Diagnostics failed (model already saved above): {conditionMessage(e)}")
+})

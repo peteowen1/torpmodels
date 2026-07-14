@@ -9,9 +9,11 @@
 .CORE_MODELS <- c(
   "ep" = "Expected Points (EP) model - XGBoost multiclass for predicting expected points from field position",
   "wp" = "Win Probability (WP) model - predicts probability of winning from game state",
+  "wp_calibration" = "WP recalibration sidecar - two-parameter Platt-on-logit correction for temporal calibration drift (torpverse/docs/plans/FABLE-RECAL-PLAN.md)",
   "shot" = "Shot outcome model - ordered categorical model for shot results",
   "match_gams" = "Sequential GAM pipeline for match predictions (5 models: total_xpoints, xscore_diff, conv_diff, score_diff, win)",
   "match_xgb_pipeline" = "XGBoost pipeline (5 models) for match predictions - evaluation/comparison only",
+  "match_margin_calibration" = "Match margin recalibration sidecar - single-slope temporal-holdout correction for the blended match-model margin (torpverse/docs/plans/FABLE-MATCH-MAE-PLAN.md)",
   "xgb_win" = "Legacy XGBoost match prediction model (superseded by match_gams)",
   "shot_player_df" = "Shot player lookup table - maps player IDs to lumped factor levels for shot model"
 )
@@ -97,6 +99,73 @@ get_models_dir <- function() {
   return(models_dir)
 }
 
+# Manifest-verified cache freshness (ECOSYSTEM-FIX-PLAN.md M3/M4)
+# -----------------------------------------------------------------
+# torpmodels' commit record is models_manifest.json (R/publish.R), NOT
+# versebus's generic bus_manifest.json -- same sha256-per-artifact idea, a
+# different asset name/schema (`artifacts` keyed by file name, not `assets`
+# keyed by a `name` field). `.get_models_manifest()` fetches it via
+# publish.R's `.fetch_manifest()` (404 -> NULL means legacy mode), rate
+# limited to one fetch per (repo, tag) per session per 15-minute window.
+# `.fetch_manifest()` aborts on transient errors when called from its
+# original producer path (never risk clobbering the ledger) -- here, as a
+# read-only cache-freshness check, that would wrongly hard-fail a load that
+# could otherwise succeed from a perfectly good local cache, so the abort is
+# caught and degraded to "couldn't verify this session" instead. A tag with
+# no manifest at all (stat-models, as of this writing) keeps exactly the
+# pre-M3 existence-only cache behaviour, plus one cli_warn for the whole
+# session -- never a hard failure.
+
+#' @noRd
+.tm_manifest_state <- new.env(parent = emptyenv())
+
+#' @noRd
+.tm_manifest_ttl_secs <- 900L
+
+#' Session-cached, rate-limited fetch of a tag's models_manifest.json
+#' @keywords internal
+.get_models_manifest <- function(repo, tag, verbose = TRUE) {
+  key <- paste0(repo, "@", tag)
+  cached <- .tm_manifest_state[[key]]
+  if (!is.null(cached) &&
+      as.numeric(Sys.time() - cached$fetched_at, units = "secs") < .tm_manifest_ttl_secs) {
+    return(cached$manifest)
+  }
+
+  manifest <- tryCatch(
+    .fetch_manifest(repo, tag),
+    error = function(e) {
+      if (verbose) {
+        cli::cli_warn("Could not fetch models_manifest.json for {.val {tag}} ({conditionMessage(e)}) -- skipping cache verification this session")
+      }
+      NULL
+    }
+  )
+  .tm_manifest_state[[key]] <- list(manifest = manifest, fetched_at = Sys.time())
+
+  if (is.null(manifest) && verbose && !isTRUE(.tm_manifest_state$.legacy_warned)) {
+    cli::cli_warn("{.val {tag}} on {.val {repo}} has no models_manifest.json -- running unverified (legacy mode)")
+    .tm_manifest_state$.legacy_warned <- TRUE
+  }
+
+  manifest
+}
+
+#' Is a locally cached model file still valid against models_manifest.json?
+#'
+#' TRUE (serve from cache) when there's no manifest to check against (legacy
+#' mode) or no entry for this specific file (an untracked artifact -- can't
+#' validate it, so don't punish it); otherwise delegates to versebus's
+#' sidecar-based `vb_cache_validate()`.
+#' @keywords internal
+.tm_cache_is_fresh <- function(repo, tag, file_name, local_path, verbose = TRUE) {
+  manifest <- .get_models_manifest(repo, tag, verbose)
+  if (is.null(manifest) || is.null(manifest$artifacts)) return(TRUE)
+  entry <- manifest$artifacts[[file_name]]
+  if (is.null(entry) || is.null(entry$sha256)) return(TRUE)
+  vb_cache_validate(local_path, entry)
+}
+
 #' Load a TORP Model
 #'
 #' Loads a pre-trained model from local cache or downloads from GitHub releases.
@@ -105,8 +174,10 @@ get_models_dir <- function() {
 #' @param model_name Character. Name of the model to load. One of:
 #'   - "ep" or "ep_model" - Expected Points model
 #'   - "wp" or "wp_model" - Win Probability model
+#'   - "wp_calibration" - WP recalibration sidecar (published atomically with "wp")
 #'   - "shot" or "shot_ocat_mdl" - Shot outcome classification model
 #'   - "match_gams" - Sequential GAM pipeline for match predictions (production)
+#'   - "match_margin_calibration" - Match margin recalibration sidecar (published atomically with "match_gams")
 #'   - "xgb_win" or "xgb_win_model" - Legacy XGBoost match prediction model
 #' @param force_download Logical. If TRUE, downloads fresh copy even if cached locally.
 #' @param verbose Logical. If TRUE, prints status messages.
@@ -124,20 +195,26 @@ load_torp_model <- function(model_name, force_download = FALSE, verbose = TRUE) 
   model_info <- normalize_model_name(model_name)
 
   if (is.null(model_info)) {
-    cli::cli_abort("Unknown model: {model_name}. Available models: ep, wp, shot, match_gams, xgb_win (legacy)")
+    cli::cli_abort("Unknown model: {model_name}. Available models: ep, wp, wp_calibration, shot, match_gams, match_margin_calibration, xgb_win (legacy)")
   }
 
   model_file <- model_info$file
   release_tag <- model_info$tag
+  repo <- get_torpmodels_repo()
 
   # Check local cache first
   local_path <- file.path(get_models_dir(), "core", model_file)
 
   if (file.exists(local_path) && !force_download) {
-    if (verbose) {
-      cli::cli_inform("Loading {model_name} from local cache")
+    if (.tm_cache_is_fresh(repo, release_tag, model_file, local_path, verbose)) {
+      if (verbose) {
+        cli::cli_inform("Loading {model_name} from local cache")
+      }
+      return(.load_with_provenance(local_path, model_name, verbose))
     }
-    return(safe_read_rds(local_path, model_name))
+    if (verbose) {
+      cli::cli_inform("Cached {model_name} does not match models_manifest.json -- re-downloading")
+    }
   }
 
   # Download from GitHub release
@@ -145,13 +222,46 @@ load_torp_model <- function(model_name, force_download = FALSE, verbose = TRUE) 
     cli::cli_inform("Downloading {model_name} from GitHub releases...")
   }
 
-  download_model_from_release(model_file, release_tag, local_path, verbose)
+  had_cache <- file.exists(local_path)
+  dl_result <- tryCatch(
+    download_model_from_release(model_file, release_tag, local_path, verbose),
+    error = function(e) e
+  )
+  if (inherits(dl_result, "error")) {
+    # A stale/mismatched manifest that made the cache look non-fresh should
+    # never turn a genuine network failure into "no model at all" when a
+    # perfectly loadable file already sits in the cache -- on main this
+    # always served the cached RDS; restore that as the fallback here too.
+    if (had_cache && !isTRUE(force_download)) {
+      cli::cli_warn("Download of {model_name} failed ({conditionMessage(dl_result)}) -- serving existing local cache instead")
+      return(.load_with_provenance(local_path, model_name, verbose))
+    }
+    stop(dl_result)
+  }
 
   if (!file.exists(local_path)) {
     cli::cli_abort("Failed to download model: {model_name}")
   }
 
-  return(safe_read_rds(local_path, model_name))
+  return(.load_with_provenance(local_path, model_name, verbose))
+}
+
+#' Read a model RDS and report its provenance stamp
+#'
+#' Never hard-fails on a meta-less artifact -- old models predate provenance
+#' stamping and must keep loading, just with a warning.
+#' @keywords internal
+.load_with_provenance <- function(local_path, model_name, verbose) {
+  object <- safe_read_rds(local_path, model_name)
+  meta <- model_meta(object)
+  if (verbose) {
+    if (!is.null(meta)) {
+      describe_model_meta(meta)
+    } else {
+      cli::cli_warn("{model_name} has no torp_meta -- trained before provenance stamping or via a non-canonical path")
+    }
+  }
+  object
 }
 
 #' Load a Stat Model
@@ -183,15 +293,21 @@ load_stat_model <- function(stat_name, force_download = FALSE, verbose = TRUE) {
 
   model_file <- paste0(stat_name, ".rds")
   release_tag <- "stat-models"
+  repo <- get_torpmodels_repo()
 
   # Check local cache first
   local_path <- file.path(get_models_dir(), "stat-models", model_file)
 
   if (file.exists(local_path) && !force_download) {
-    if (verbose) {
-      cli::cli_inform("Loading stat model '{stat_name}' from local cache")
+    if (.tm_cache_is_fresh(repo, release_tag, model_file, local_path, verbose)) {
+      if (verbose) {
+        cli::cli_inform("Loading stat model '{stat_name}' from local cache")
+      }
+      return(safe_read_rds(local_path, stat_name))
     }
-    return(safe_read_rds(local_path, stat_name))
+    if (verbose) {
+      cli::cli_inform("Cached stat model '{stat_name}' does not match models_manifest.json -- re-downloading")
+    }
   }
 
   # Download from GitHub release
@@ -199,7 +315,18 @@ load_stat_model <- function(stat_name, force_download = FALSE, verbose = TRUE) {
     cli::cli_inform("Downloading stat model '{stat_name}' from GitHub releases...")
   }
 
-  download_model_from_release(model_file, release_tag, local_path, verbose)
+  had_cache <- file.exists(local_path)
+  dl_result <- tryCatch(
+    download_model_from_release(model_file, release_tag, local_path, verbose),
+    error = function(e) e
+  )
+  if (inherits(dl_result, "error")) {
+    if (had_cache && !isTRUE(force_download)) {
+      cli::cli_warn("Download of stat model '{stat_name}' failed ({conditionMessage(dl_result)}) -- serving existing local cache instead")
+      return(safe_read_rds(local_path, stat_name))
+    }
+    stop(dl_result)
+  }
 
   if (!file.exists(local_path)) {
     cli::cli_abort("Failed to download stat model: {stat_name}")
@@ -341,12 +468,14 @@ normalize_model_name <- function(model_name) {
     ep_model = list(file = "ep_model.rds", tag = "core-models"),
     wp = list(file = "wp_model.rds", tag = "core-models"),
     wp_model = list(file = "wp_model.rds", tag = "core-models"),
+    wp_calibration = list(file = "wp_calibration.rds", tag = "core-models"),
     shot = list(file = "shot_ocat_mdl.rds", tag = "core-models"),
     shot_ocat_mdl = list(file = "shot_ocat_mdl.rds", tag = "core-models"),
     xgb_win = list(file = "xgb_win_model.rds", tag = "core-models"),
     xgb_win_model = list(file = "xgb_win_model.rds", tag = "core-models"),
     match_gams = list(file = "match_gams.rds", tag = "core-models"),
     match_xgb_pipeline = list(file = "match_xgb_pipeline.rds", tag = "core-models"),
+    match_margin_calibration = list(file = "match_margin_calibration.rds", tag = "core-models"),
     shot_player_df = list(file = "shot_player_df.rds", tag = "core-models")
   )
 
@@ -375,6 +504,7 @@ safe_read_rds <- function(path, label = basename(path)) {
       )
       if (is_corruption) {
         unlink(path)
+        unlink(paste0(path, ".sha256"))
         cli::cli_abort(
           "Model file for {label} is corrupted: {msg}. Cache cleared, try again."
         )
@@ -387,9 +517,19 @@ safe_read_rds <- function(path, label = basename(path)) {
 }
 
 #' Download model from GitHub release
+#'
+#' Verifies sha256 against `models_manifest.json` when the tag's manifest
+#' tracks this file -- replacing the old `file.size > 1000` heuristic, which
+#' is now only a last-resort fallback for tags with no manifest yet (e.g.
+#' stat-models, as of this writing). Each download attempt lands in a
+#' tempdir beside the destination and is moved into place atomically via
+#' `vb_atomic_write()`, with a `<local_path>.sha256` sidecar written
+#' alongside on success. A failed integrity check deletes the temp and
+#' retries the SAME method once before falling through to the next method
+#' (piggyback, then a direct release URL); a pre-existing `local_path` is
+#' never touched by a failed download.
 #' @keywords internal
 #' @importFrom cli cli_inform cli_warn cli_abort
-#' @importFrom utils download.file
 download_model_from_release <- function(file_name, release_tag, local_path, verbose = TRUE) {
   repo <- get_torpmodels_repo()
 
@@ -399,65 +539,114 @@ download_model_from_release <- function(file_name, release_tag, local_path, verb
     dir.create(parent_dir, recursive = TRUE)
   }
 
-  # Try piggyback first (preferred method); capture error message via the
-  # tryCatch return value rather than a <<- assignment.
-  pb_error <- tryCatch({
-    temp_dir <- tempdir()
+  manifest <- .get_models_manifest(repo, release_tag, verbose)
+  entry <- if (!is.null(manifest) && !is.null(manifest$artifacts)) manifest$artifacts[[file_name]] else NULL
 
-    piggyback::pb_download(
-      file = file_name,
-      repo = repo,
-      tag = release_tag,
-      dest = temp_dir
-    )
+  # One fetch+verify+place attempt. `fetch_fn(tmpdir)` must leave `file_name`
+  # inside `tmpdir`; raises a vb_error_integrity (via .vb_abort(), vendored
+  # in versebus.R) on a corrupt/undersized/mismatched download, otherwise
+  # propagates whatever error the download call itself raised (network,
+  # 404, ...).
+  attempt <- function(fetch_fn) {
+    tmpdir <- tempfile(".tm_dl_", tmpdir = parent_dir)
+    dir.create(tmpdir)
+    on.exit(unlink(tmpdir, recursive = TRUE), add = TRUE)
 
-    temp_path <- file.path(temp_dir, file_name)
-    if (file.exists(temp_path) && file.size(temp_path) > 1000) {
-      file.copy(temp_path, local_path, overwrite = TRUE)
-      unlink(temp_path)
-      if (verbose) cli::cli_inform("Successfully downloaded {file_name}")
-      return(invisible(TRUE))
-    } else if (file.exists(temp_path)) {
-      unlink(temp_path)
-      stop("Downloaded file is too small (likely an error page)")
-    } else {
-      stop("piggyback reported success but no file was written")
+    fetch_fn(tmpdir)
+
+    tmp <- file.path(tmpdir, file_name)
+    if (!file.exists(tmp) || file.size(tmp) == 0L) {
+      .vb_abort("{file_name}: download produced no/empty file", "vb_error_integrity")
     }
-  }, error = function(e) {
-    if (verbose) cli::cli_warn("piggyback download failed: {e$message}")
-    e$message
-  })
+    # RDS validity check independent of file size: saveRDS() defaults to
+    # gzip compression, so any real .rds -- even a ~200-byte calibration
+    # sidecar list of a few scalars -- starts with the gzip magic bytes
+    # (0x1f 0x8b). An HTML error page or truncated download won't. This
+    # replaces a flat file.size <= 1000L floor that rejected legitimate
+    # small sidecars (wp_calibration.rds, match_margin_calibration.rds).
+    is_valid_rds <- function(path) {
+      con <- file(path, "rb")
+      on.exit(close(con), add = TRUE)
+      magic <- readBin(con, "raw", 2L)
+      length(magic) == 2L && identical(as.integer(magic), c(0x1fL, 0x8bL))
+    }
+    if (!is_valid_rds(tmp)) {
+      .vb_abort("{file_name}: downloaded file is not a valid .rds (likely an error page or truncated download)", "vb_error_integrity")
+    }
+    if (!is.null(entry) && !is.null(entry$sha256)) {
+      got <- vb_sha256(tmp)
+      if (!identical(got, entry$sha256)) {
+        # A stale models_manifest.json entry (e.g. an upload that skipped
+        # update_models_manifest()) is far more likely than corruption --
+        # the RDS-validity check above already caught the corruption case.
+        # Warn rather than permanently brick the asset until someone
+        # manually republishes the manifest.
+        cli::cli_warn(
+          "{file_name}: sha256 mismatch vs models_manifest.json (got {substr(got, 1, 12)}..., want {substr(entry$sha256, 1, 12)}...) -- manifest may be stale, trusting the verified-valid download"
+        )
+      }
+    }
+
+    vb_atomic_write(function(p) file.copy(tmp, p, overwrite = TRUE), local_path)
+    writeLines(vb_sha256(local_path), paste0(local_path, ".sha256"))
+    invisible(TRUE)
+  }
+
+  with_retry <- function(fetch_fn, label) {
+    result <- tryCatch(attempt(fetch_fn), error = function(e) e)
+    if (inherits(result, "vb_error_integrity")) {
+      if (verbose) {
+        cli::cli_warn("{label} download of {file_name} failed integrity check ({conditionMessage(result)}); retrying once")
+      }
+      result <- tryCatch(attempt(fetch_fn), error = function(e) e)
+    }
+    result
+  }
+
+  # Try piggyback first (preferred method)
+  pb_result <- with_retry(function(tmpdir) {
+    piggyback::pb_download(
+      file = file_name, repo = repo, tag = release_tag,
+      dest = tmpdir, overwrite = TRUE
+    )
+  }, "piggyback")
+
+  if (!inherits(pb_result, "error")) {
+    if (verbose) cli::cli_inform("Successfully downloaded {file_name}")
+    return(invisible(TRUE))
+  }
+  if (verbose) cli::cli_warn("piggyback download failed: {conditionMessage(pb_result)}")
 
   # Fallback to direct URL download
-  url_error <- tryCatch({
+  url_result <- with_retry(function(tmpdir) {
     url <- paste0(
       "https://github.com/", repo, "/releases/download/",
       release_tag, "/", file_name
     )
-
     if (verbose) cli::cli_inform("Trying direct download from {url}")
+    # Qualified on purpose (not an unqualified `@importFrom` binding): a
+    # bare `download.file()` resolves to the copy captured in this
+    # package's namespace at load time, which testthat's
+    # `local_mocked_bindings(.package = "utils")` cannot reach -- only a
+    # live `utils::` lookup sees the mocked binding.
+    utils::download.file(url, file.path(tmpdir, file_name), mode = "wb", quiet = !verbose)
+  }, "direct URL")
 
-    download.file(url, local_path, mode = "wb", quiet = !verbose)
+  if (!inherits(url_result, "error")) {
+    if (verbose) cli::cli_inform("Successfully downloaded {file_name}")
+    return(invisible(TRUE))
+  }
 
-    if (file.exists(local_path) && file.size(local_path) > 1000) {
-      if (verbose) cli::cli_inform("Successfully downloaded {file_name}")
-      return(invisible(TRUE))
-    } else if (file.exists(local_path)) {
-      bad_size <- file.size(local_path)
-      unlink(local_path)
-      stop(paste0("Downloaded file too small (", bad_size, " bytes), likely an error page"))
-    }
-    NULL
-  }, error = function(e) {
-    cli::cli_warn("Direct download failed: {e$message}")
-    e$message
-  })
-
-  # Both methods failed - report both errors
-  details <- character()
-  if (is.character(pb_error))  details <- c(details, paste0("piggyback: ", pb_error))
-  if (is.character(url_error)) details <- c(details, paste0("direct URL: ", url_error))
-  detail_msg <- paste(details, collapse = "; ")
-
-  cli::cli_abort("Failed to download {file_name} from release {release_tag}. {detail_msg}")
+  # Both methods failed -- report both; type as vb_error_integrity if either
+  # failure was a corruption signal (never silently downgrade that to a
+  # generic network error class).
+  details <- paste0(
+    "piggyback: ", conditionMessage(pb_result), "; ",
+    "direct URL: ", conditionMessage(url_result)
+  )
+  is_integrity <- inherits(pb_result, "vb_error_integrity") || inherits(url_result, "vb_error_integrity")
+  cli::cli_abort(
+    "Failed to download {file_name} from release {release_tag}. {details}",
+    class = if (is_integrity) c("vb_error_integrity", "vb_error") else "vb_error"
+  )
 }

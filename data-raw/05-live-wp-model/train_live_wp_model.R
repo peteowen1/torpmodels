@@ -15,9 +15,15 @@ library(data.table)
 # Load torp
 torp_path <- file.path(dirname(dirname(getwd())), "torp")
 if (!file.exists(file.path(torp_path, "DESCRIPTION"))) {
-  torp_path <- "C:/Users/peteo/OneDrive/Documents/torpverse/torp"
+  torp_path <- "C:/dev/torpverse/torp"
 }
 devtools::load_all(torp_path)
+
+torp_sha <- tryCatch(
+  system2("git", c("-C", torp_path, "rev-parse", "--short", "HEAD"), stdout = TRUE, stderr = FALSE),
+  error = function(e) NA_character_
+)
+if (length(torp_sha) != 1 || !nzchar(torp_sha)) torp_sha <- NA_character_
 
 # ── Step 1: Load and clean PBP data ──────────────────────────────────────────
 
@@ -133,6 +139,9 @@ cli::cli_alert_info("Home advantage: {round(mean(lookup$home_advantage) * 100, 1
 output <- list(
   description = "AFL Live Win Probability Lookup Table",
   trained_on = paste0(min(dt$season), "-", max(dt$season)),
+  exported_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%S%z"),
+  torp_sha = torp_sha,
+  script = "train_live_wp_model.R",
   n_matches = n_matches,
   n_plays = nrow(dt),
   n_draws = n_tied_final,
@@ -146,7 +155,7 @@ output <- list(
   })
 )
 
-output_dir <- file.path(dirname(dirname(getwd())), "inst", "models", "core")
+output_dir <- file.path(getwd(), "inst", "models", "core")
 if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
 
 json_path <- file.path(output_dir, "live_wp_lookup.json")
@@ -197,7 +206,7 @@ print(calib)
 
 # ── Step 8: Copy to inthegame-blog ──────────────────────────────────────────
 
-blog_path <- "C:/Users/peteo/OneDrive/Documents/inthegame-blog/afl/live-wp-lookup.json"
+blog_path <- "C:/dev/inthegame-blog/afl/live-wp-lookup.json"
 file.copy(json_path, blog_path, overwrite = TRUE)
 cli::cli_alert_success("Copied lookup table to {blog_path}")
 

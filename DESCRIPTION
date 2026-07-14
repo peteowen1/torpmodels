@@ -13,8 +13,12 @@ Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.3
 Imports:
     cli (>= 3.0.0),
+    digest,
+    gh,
+    jsonlite,
     piggyback (>= 0.1.4)
 Suggests:
+    devtools,
     mgcv (>= 1.8.0),
     xgboost (>= 2.0.0),
     testthat (>= 3.0.0),
