@@ -14,6 +14,12 @@ if (!is.null(.torp_test_path)) {
 }
 
 lib <- testthat::test_path("..", "..", "data-raw", "lib", "train_lib.R")
+if (!file.exists(lib)) {
+  # data-raw/ is .Rbuildignore'd (correctly -- it's not part of the
+  # installable package), so it doesn't exist in R CMD check's built-package
+  # copy. This file is only sourceable from a source checkout (devtools::test()).
+  testthat::skip("data-raw/lib/train_lib.R not reachable (not in the built package -- run via devtools::test() instead)")
+}
 env <- new.env()
 source(lib, local = env)
 
