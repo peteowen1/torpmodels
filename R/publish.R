@@ -11,7 +11,7 @@
   ep    = "ep_model.rds",
   wp    = c("wp_model.rds", "wp_calibration.rds"),
   shot  = c("shot_ocat_mdl.rds", "shot_player_df.rds"),
-  match = c("match_gams.rds", "match_xgb_pipeline.rds")
+  match = c("match_gams.rds", "match_xgb_pipeline.rds", "match_margin_calibration.rds")
 )
 
 #' Publish a model group to a GitHub release as an atomic unit
@@ -78,7 +78,30 @@ publish_model_group <- function(group, dir, repo = get_torpmodels_repo(),
   }
 
   if (update_manifest) {
-    update_models_manifest(files, dir, repo, tag)
+    manifest_result <- tryCatch(
+      update_models_manifest(files, dir, repo, tag),
+      error = function(e) e
+    )
+    if (inherits(manifest_result, "error")) {
+      # Retry once (mirrors versebus vb_publish's own manifest-last retry),
+      # then degrade to a loud warning rather than aborting: the group's
+      # assets are ALREADY live on the release at this point, so treating
+      # this as a publish failure would be misleading -- the caller would
+      # re-run publish_model_group() and re-upload assets that don't need
+      # re-uploading. What actually needs a retry is update_models_manifest()
+      # alone.
+      Sys.sleep(5)
+      manifest_result <- tryCatch(
+        update_models_manifest(files, dir, repo, tag),
+        error = function(e) e
+      )
+      if (inherits(manifest_result, "error")) {
+        cli::cli_warn(c(
+          "publish_model_group({.val {group}}): assets uploaded successfully, but models_manifest.json update failed twice: {conditionMessage(manifest_result)}",
+          "i" = "{paste(uploaded, collapse = ', ')} are live but untracked -- re-run {.fn update_models_manifest} for this group once the transient issue clears."
+        ))
+      }
+    }
   }
 
   invisible(uploaded)
@@ -233,7 +256,17 @@ check_manifest_sync <- function(repo = get_torpmodels_repo(), tag = "core-models
     }
   }
 
-  if (length(stale_or_outside_path) == 0 && length(manifest_without_asset) == 0) {
+  # Assets on the release with ZERO manifest entry (e.g. published via a
+  # bare piggyback::pb_upload() that bypassed update_models_manifest()
+  # entirely, such as match_margin_calibration.rds's current upload path in
+  # torp) are a distinct, more severe gap than a stale/drifted entry -- the
+  # loop above can only ever find drift on files the manifest already
+  # tracks. Surface files with no entry at all, excluding the manifest
+  # asset itself and any non-model housekeeping files.
+  untracked_assets <- setdiff(asset_names, c(names(manifest$artifacts), .manifest_asset_name, "bus_manifest.json"))
+
+  if (length(stale_or_outside_path) == 0 && length(manifest_without_asset) == 0 &&
+      length(untracked_assets) == 0) {
     cli::cli_alert_success("check_manifest_sync: {repo}@{tag} is clean -- every asset matches its manifest record.")
   } else {
     if (length(stale_or_outside_path) > 0) {
@@ -242,8 +275,12 @@ check_manifest_sync <- function(repo = get_torpmodels_repo(), tag = "core-models
     if (length(manifest_without_asset) > 0) {
       cli::cli_warn("Manifest entries with no matching release asset: {paste(manifest_without_asset, collapse = ', ')}")
     }
+    if (length(untracked_assets) > 0) {
+      cli::cli_warn("Release assets with NO manifest entry at all -- zero provenance/history tracking: {paste(untracked_assets, collapse = ', ')}")
+    }
   }
 
   invisible(list(stale_or_outside_path = stale_or_outside_path,
-                 manifest_without_asset = manifest_without_asset))
+                 manifest_without_asset = manifest_without_asset,
+                 untracked_assets = untracked_assets))
 }

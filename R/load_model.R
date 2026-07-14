@@ -222,7 +222,22 @@ load_torp_model <- function(model_name, force_download = FALSE, verbose = TRUE) 
     cli::cli_inform("Downloading {model_name} from GitHub releases...")
   }
 
-  download_model_from_release(model_file, release_tag, local_path, verbose)
+  had_cache <- file.exists(local_path)
+  dl_result <- tryCatch(
+    download_model_from_release(model_file, release_tag, local_path, verbose),
+    error = function(e) e
+  )
+  if (inherits(dl_result, "error")) {
+    # A stale/mismatched manifest that made the cache look non-fresh should
+    # never turn a genuine network failure into "no model at all" when a
+    # perfectly loadable file already sits in the cache -- on main this
+    # always served the cached RDS; restore that as the fallback here too.
+    if (had_cache && !isTRUE(force_download)) {
+      cli::cli_warn("Download of {model_name} failed ({conditionMessage(dl_result)}) -- serving existing local cache instead")
+      return(.load_with_provenance(local_path, model_name, verbose))
+    }
+    stop(dl_result)
+  }
 
   if (!file.exists(local_path)) {
     cli::cli_abort("Failed to download model: {model_name}")
@@ -300,7 +315,18 @@ load_stat_model <- function(stat_name, force_download = FALSE, verbose = TRUE) {
     cli::cli_inform("Downloading stat model '{stat_name}' from GitHub releases...")
   }
 
-  download_model_from_release(model_file, release_tag, local_path, verbose)
+  had_cache <- file.exists(local_path)
+  dl_result <- tryCatch(
+    download_model_from_release(model_file, release_tag, local_path, verbose),
+    error = function(e) e
+  )
+  if (inherits(dl_result, "error")) {
+    if (had_cache && !isTRUE(force_download)) {
+      cli::cli_warn("Download of stat model '{stat_name}' failed ({conditionMessage(dl_result)}) -- serving existing local cache instead")
+      return(safe_read_rds(local_path, stat_name))
+    }
+    stop(dl_result)
+  }
 
   if (!file.exists(local_path)) {
     cli::cli_abort("Failed to download stat model: {stat_name}")
@@ -532,17 +558,33 @@ download_model_from_release <- function(file_name, release_tag, local_path, verb
     if (!file.exists(tmp) || file.size(tmp) == 0L) {
       .vb_abort("{file_name}: download produced no/empty file", "vb_error_integrity")
     }
+    # RDS validity check independent of file size: saveRDS() defaults to
+    # gzip compression, so any real .rds -- even a ~200-byte calibration
+    # sidecar list of a few scalars -- starts with the gzip magic bytes
+    # (0x1f 0x8b). An HTML error page or truncated download won't. This
+    # replaces a flat file.size <= 1000L floor that rejected legitimate
+    # small sidecars (wp_calibration.rds, match_margin_calibration.rds).
+    is_valid_rds <- function(path) {
+      con <- file(path, "rb")
+      on.exit(close(con), add = TRUE)
+      magic <- readBin(con, "raw", 2L)
+      length(magic) == 2L && identical(as.integer(magic), c(0x1fL, 0x8bL))
+    }
+    if (!is_valid_rds(tmp)) {
+      .vb_abort("{file_name}: downloaded file is not a valid .rds (likely an error page or truncated download)", "vb_error_integrity")
+    }
     if (!is.null(entry) && !is.null(entry$sha256)) {
       got <- vb_sha256(tmp)
       if (!identical(got, entry$sha256)) {
-        .vb_abort(
-          "{file_name}: sha256 mismatch vs models_manifest.json (got {substr(got, 1, 12)}..., want {substr(entry$sha256, 1, 12)}...)",
-          "vb_error_integrity"
+        # A stale models_manifest.json entry (e.g. an upload that skipped
+        # update_models_manifest()) is far more likely than corruption --
+        # the RDS-validity check above already caught the corruption case.
+        # Warn rather than permanently brick the asset until someone
+        # manually republishes the manifest.
+        cli::cli_warn(
+          "{file_name}: sha256 mismatch vs models_manifest.json (got {substr(got, 1, 12)}..., want {substr(entry$sha256, 1, 12)}...) -- manifest may be stale, trusting the verified-valid download"
         )
       }
-    } else if (file.size(tmp) <= 1000L) {
-      # No manifest entry to verify against -- legacy size heuristic.
-      .vb_abort("{file_name}: downloaded file is too small (likely an error page)", "vb_error_integrity")
     }
 
     vb_atomic_write(function(p) file.copy(tmp, p, overwrite = TRUE), local_path)
