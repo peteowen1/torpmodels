@@ -96,7 +96,9 @@ build_team_elo <- function(matches, k = 20, hga = 35, carryover = 0.75, mov_mult
     result <- if (is.na(m)) 0.5 else if (m > 0) 1 else if (m < 0) 0 else 0.5
 
     mov <- if (isTRUE(mov_mult) && !is.na(m) && m != 0) {
-      log(abs(m) + 1) * (2.2 / (0.001 * abs(elo_h - elo_a) + 2.2))
+      # 538-style: winner-relative, not abs() -- see torp/R/team_elo.R.
+      elo_diff_winner <- if (m > 0) elo_h - elo_a else elo_a - elo_h
+      log(abs(m) + 1) * (2.2 / (0.001 * elo_diff_winner + 2.2))
     } else {
       1
     }
