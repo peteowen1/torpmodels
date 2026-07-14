@@ -17,9 +17,7 @@
 # Uses shared functions from torp/R/match_model.R and match_train.R.
 
 # Parameters ----
-# exists()-guarded so a caller can inject TEST_SEASONS before sourcing this
-# script (e.g. eval_squiggle_rank.R) without it being clobbered.
-if (!exists("TEST_SEASONS", inherits = FALSE)) TEST_SEASONS <- 2025:2026  # Seasons to evaluate (rolling week-by-week)
+TEST_SEASONS <- 2025:2026  # Seasons to evaluate (rolling week-by-week)
 
 # Setup ----
 library(tidyverse)
@@ -405,8 +403,13 @@ if (!is.null(sub_games_2026) && !is.null(sub_tips_2026)) {
     cat("\n=== WS0 Champion Identification: Correlation to Submitted Tips (2026) ===\n")
     print(corr_table, row.names = FALSE)
 
-    champion_variant <- corr_table$Model[which.max(corr_table$CorMarginVsSubmitted)]
-    cli::cli_alert_info("Champion variant (highest correlation to submitted tips): {champion_variant}")
+    if (all(is.na(corr_table$CorMarginVsSubmitted))) {
+      champion_variant <- "none (insufficient data)"
+      cli::cli_alert_warning("No variant had >= 3 matched games vs submitted tips this run (early season, or the (round, hteam_norm) join found too few matches) — skipping champion identification.")
+    } else {
+      champion_variant <- corr_table$Model[which.max(corr_table$CorMarginVsSubmitted)]
+      cli::cli_alert_info("Champion variant (highest correlation to submitted tips): {champion_variant}")
+    }
 
     # WS0 stop condition: does ANY variant reproduce the submitted slope ~0.80 (+/-0.05)?
     slope_target <- 0.80
