@@ -195,9 +195,20 @@ print(samples[, .(scenario, xmargin, is_home, wp_poss)])
 
 # ── 6. Richness check ────────────────────────────────────────────────────────
 cli::cli_h1("Richness check")
-test_mid <- dt_rel[season == max(season) & round_number == max(round_number, na.rm = TRUE),
+current_season <- max(dt_rel$season, na.rm = TRUE)
+current_season_rounds <- dt_rel[season == current_season, round_number]
+if (length(current_season_rounds) == 0 || all(is.na(current_season_rounds))) {
+  stop("Richness check: no rows found for current season (", current_season,
+       ") in dt_rel — cannot select a test match.")
+}
+max_round_current <- max(current_season_rounds, na.rm = TRUE)
+test_mid <- dt_rel[season == current_season & round_number == max_round_current,
                    unique(match_id)][1]
-if (is.na(test_mid)) test_mid <- dt_rel$match_id[1]
+if (is.na(test_mid)) {
+  stop("Richness check: found no match_id for season ", current_season,
+       " round ", max_round_current, " — refusing to silently fall back to an ",
+       "unrelated match. Investigate dt_rel filtering upstream.")
+}
 cli::cli_alert_info("Test match: {test_mid}")
 
 mdt <- dt_rel[match_id == test_mid][order(period, period_seconds)]
