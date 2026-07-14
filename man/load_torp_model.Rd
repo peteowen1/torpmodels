@@ -14,6 +14,7 @@ load_torp_model(model_name, force_download = FALSE, verbose = TRUE)
 \item "wp_calibration" - WP recalibration sidecar (published atomically with "wp")
 \item "shot" or "shot_ocat_mdl" - Shot outcome classification model
 \item "match_gams" - Sequential GAM pipeline for match predictions (production)
+\item "match_margin_calibration" - Match margin recalibration sidecar (published atomically with "match_gams")
 \item "xgb_win" or "xgb_win_model" - Legacy XGBoost match prediction model
 }}
 

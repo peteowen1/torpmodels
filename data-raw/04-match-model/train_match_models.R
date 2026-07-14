@@ -4,8 +4,15 @@
 # test seasons, train GAMs + XGBoost on all prior completed matches,
 # predict that round, then aggregate metrics and compare to Squiggle.
 #
-# XGBoost nrounds are pre-optimised via CV on all data (minimal leakage),
-# then reused with fixed nrounds per rolling step (no per-week CV).
+# The rolling loop itself lives in experiments/rolling_lib.R
+# (run_rolling_eval() + .compute_metrics() + the margin-bucket report
+# tables + boot_mae_diff()) — FABLE-MATCH-MAE-PLAN.md WS0. This script is
+# now a thin caller: build data, run the harness with default trainers
+# (byte-compatible with the pre-refactor inline loop), then report.
+#
+# XGBoost nrounds are pre-optimised via CV on all pre-test-season data
+# (minimal leakage) inside run_rolling_eval(), then reused with fixed
+# nrounds per rolling step (no per-week CV).
 #
 # Uses shared functions from torp/R/match_model.R and match_train.R.
 
@@ -39,6 +46,18 @@ if (!torp_loaded) {
   library(torp)
 }
 
+# Load the rolling harness (WS0 extraction — run_rolling_eval, .compute_metrics,
+# margin_calibration_by_pred_bucket, mae_by_actual_bucket, boot_mae_diff) ----
+rolling_lib_candidates <- c(
+  "experiments/rolling_lib.R",
+  "04-match-model/experiments/rolling_lib.R",
+  "data-raw/04-match-model/experiments/rolling_lib.R",
+  "C:/dev/torpverse/torpmodels/data-raw/04-match-model/experiments/rolling_lib.R"
+)
+rolling_lib_hits <- rolling_lib_candidates[file.exists(rolling_lib_candidates)]
+if (length(rolling_lib_hits) == 0) stop("Cannot find experiments/rolling_lib.R")
+source(rolling_lib_hits[1])
+
 # Build Data ----
 cli::cli_h1("Building Match Prediction Training Data")
 tictoc::tic("total")
@@ -47,228 +66,28 @@ team_mdl_df <- build_team_mdl_df()
 
 cli::cli_inform("Seasons: {paste(sort(unique(team_mdl_df$season.x)), collapse = ', ')}")
 
-# Pre-optimise XGBoost nrounds via CV on PRE-test-season data only ----
-# Using the full dataset (including TEST_SEASONS) would leak: best_n would be
-# tuned with knowledge of folds that include the rounds we're about to predict
-# in the rolling loop. Restrict the CV input to seasons strictly before the
-# earliest test season so nrounds is fully out-of-sample relative to TEST_SEASONS.
-cli::cli_h2("Pre-optimising XGBoost nrounds (CV on pre-test-season data)")
-.cv_train_mask <- team_mdl_df$season.x < min(TEST_SEASONS)
-.cv_train_df   <- team_mdl_df[.cv_train_mask, ]
-cli::cli_inform("nrounds CV input: {sum(.cv_train_mask)/2} matches (seasons < {min(TEST_SEASONS)})")
-xgb_cv_result <- .train_match_xgb(.cv_train_df)
-xgb_nrounds <- vapply(xgb_cv_result$steps, function(s) s$best_n, integer(1))
-cli::cli_inform("XGBoost nrounds: {paste(names(xgb_nrounds), xgb_nrounds, sep='=', collapse=', ')}")
+# Rolling evaluation ----
+# Default trainers (.train_match_gams from torp, .train_xgb_fixed from
+# rolling_lib.R) reproduce the pre-refactor inline loop exactly.
+roll <- run_rolling_eval(team_mdl_df, TEST_SEASONS)
 
-# XGBoost helper: train with fixed nrounds (no CV per week) ----
-.train_xgb_fixed <- function(team_mdl_df, train_filter, nrounds_vec) {
-  loadNamespace("xgboost")
-
-  train_mask <- train_filter & !is.na(team_mdl_df$win) &
-    !is.na(team_mdl_df$total_xpoints_adj) & !is.na(team_mdl_df$xscore_diff) &
-    !is.na(team_mdl_df$shot_conv_diff) & !is.na(team_mdl_df$score_diff)
-
-  xgb_df <- team_mdl_df[train_mask, ]
-  if (nrow(xgb_df) == 0) return(team_mdl_df)
-
-  osr_dsr_cols <- character(0)
-  if (all(c("osr_diff", "dsr_diff") %in% names(team_mdl_df)) &&
-      !all(is.na(team_mdl_df$osr_diff))) {
-    osr_dsr_cols <- c("osr_diff", "dsr_diff")
-  }
-
-  base_cols <- c(
-    "team_type_fac",
-    "game_year_decimal.x", "game_prop_through_year.x",
-    "game_prop_through_month.x", "game_prop_through_day.x",
-    "epr_diff", "epr_recv_diff", "epr_disp_diff",
-    "epr_spoil_diff", "epr_hitout_diff",
-    "torp_diff", "psr_diff", osr_dsr_cols,
-    "log_dist_diff", "familiarity_diff", "days_rest_diff_fac"
-  )
-
-  reg_params <- list(
-    objective = "reg:squarederror", eval_metric = "rmse",
-    tree_method = "hist", eta = 0.05, subsample = 0.7,
-    colsample_bytree = 0.8, max_depth = 3, min_child_weight = 15
-  )
-  cls_params <- list(
-    objective = "binary:logistic", eval_metric = "logloss",
-    tree_method = "hist", eta = 0.05, subsample = 0.7,
-    colsample_bytree = 0.8, max_depth = 3, min_child_weight = 15
-  )
-
-  train_fixed <- function(df, label, weights, feature_cols, params, nr) {
-    fmat <- stats::model.matrix(~ . - 1, data = df[, feature_cols, drop = FALSE])
-    dtrain <- xgboost::xgb.DMatrix(data = fmat, label = label, weight = weights)
-    set.seed(1234)
-    model <- xgboost::xgb.train(
-      params = params, data = dtrain, nrounds = nr,
-      print_every_n = 0, verbose = 0
-    )
-    model
-  }
-
-  predict_all <- function(model, df, feature_cols) {
-    mat <- stats::model.matrix(~ . - 1, data = df[, feature_cols, drop = FALSE])
-    predict(model, xgboost::xgb.DMatrix(data = mat))
-  }
-
-  # Step 1: total xPoints
-  m1 <- train_fixed(xgb_df, xgb_df$total_xpoints_adj, xgb_df$weightz,
-                     base_cols, reg_params, nrounds_vec["total_xpoints"])
-  xgb_df$xgb_pred_tot_xscore <- predict_all(m1, xgb_df, base_cols)
-  team_mdl_df$xgb_pred_tot_xscore <- predict_all(m1, team_mdl_df, base_cols)
-
-  # Step 2: xScore diff
-  s2_cols <- c(base_cols, "xgb_pred_tot_xscore")
-  m2 <- train_fixed(xgb_df, xgb_df$xscore_diff, xgb_df$weightz,
-                     s2_cols, reg_params, nrounds_vec["xscore_diff"])
-  xgb_df$xgb_pred_xscore_diff <- predict_all(m2, xgb_df, s2_cols)
-  team_mdl_df$xgb_pred_xscore_diff <- predict_all(m2, team_mdl_df, s2_cols)
-
-  # Step 3: conv diff
-  s3_cols <- c(base_cols, "xgb_pred_tot_xscore", "xgb_pred_xscore_diff")
-  m3 <- train_fixed(xgb_df, xgb_df$shot_conv_diff, xgb_df$shot_weightz,
-                     s3_cols, reg_params, nrounds_vec["conv_diff"])
-  xgb_df$xgb_pred_conv_diff <- predict_all(m3, xgb_df, s3_cols)
-  team_mdl_df$xgb_pred_conv_diff <- predict_all(m3, team_mdl_df, s3_cols)
-
-  # Step 4: score diff
-  s4_cols <- c(base_cols, "xgb_pred_xscore_diff", "xgb_pred_conv_diff", "xgb_pred_tot_xscore")
-  m4 <- train_fixed(xgb_df, xgb_df$score_diff, xgb_df$weightz,
-                     s4_cols, reg_params, nrounds_vec["score_diff"])
-  xgb_df$xgb_pred_score_diff <- predict_all(m4, xgb_df, s4_cols)
-  team_mdl_df$xgb_pred_score_diff <- predict_all(m4, team_mdl_df, s4_cols)
-
-  # Step 5: win probability
-  s5_cols <- c("team_type_fac", "xgb_pred_tot_xscore", "xgb_pred_score_diff",
-               "log_dist_diff", "familiarity_diff", "days_rest_diff_fac")
-  m5 <- train_fixed(xgb_df, as.numeric(xgb_df$win), xgb_df$weightz,
-                     s5_cols, cls_params, nrounds_vec["win"])
-  team_mdl_df$xgb_pred_win <- predict_all(m5, team_mdl_df, s5_cols)
-
-  team_mdl_df
-}
-
-# Identify test rounds ----
-test_rounds <- team_mdl_df |>
-  filter(!is.na(win), season.x %in% TEST_SEASONS) |>
-  distinct(season.x, round_number.x) |>
-  arrange(season.x, round_number.x) |>
-  rename(season = season.x, round = round_number.x)
-
-n_test_rounds <- nrow(test_rounds)
-n_test_matches <- sum(!is.na(team_mdl_df$win) & team_mdl_df$season.x %in% TEST_SEASONS) / 2
-cli::cli_h1("Rolling Evaluation: {n_test_rounds} rounds, ~{n_test_matches} matches ({paste(TEST_SEASONS, collapse='-')})")
-
-# Rolling evaluation loop ----
-all_gam_preds <- list()
-all_xgb_preds <- list()
-all_input_blend_preds <- list()
-
-for (i in seq_len(n_test_rounds)) {
-  s <- test_rounds$season[i]
-  r <- test_rounds$round[i]
-
-  # Train on everything strictly before this round
-  train_filter <- (team_mdl_df$season.x < s) |
-    (team_mdl_df$season.x == s & team_mdl_df$round_number.x < r)
-
-  # Test mask: this specific round, completed matches only
-  test_mask <- !is.na(team_mdl_df$win) &
-    team_mdl_df$season.x == s & team_mdl_df$round_number.x == r
-
-  n_train <- sum(train_filter & !is.na(team_mdl_df$win)) / 2
-  n_test <- sum(test_mask) / 2
-
-  if (n_test == 0) next
-
-  cli::cli_progress_step("{s} R{r}: train={n_train}, test={n_test}")
-
-  # Train GAMs
-  gam_result <- suppressMessages(
-    .train_match_gams(team_mdl_df, train_filter = train_filter, nthreads = 4L)
-  )
-  gam_data <- gam_result$data
-
-  # Train XGBoost (fixed nrounds, no CV)
-  xgb_data <- suppressMessages(
-    .train_xgb_fixed(gam_data, train_filter, xgb_nrounds)
-  )
-
-  # Extract GAM predictions for test round
-  all_gam_preds[[i]] <- .format_match_preds(gam_data[test_mask, ])
-
-  # Extract XGBoost predictions for test round
-  all_xgb_preds[[i]] <- xgb_data[test_mask, ] |>
-    mutate(pred_score_diff = xgb_pred_score_diff, pred_win = xgb_pred_win) |>
-    .format_match_preds()
-
-  # Input blend: blend intermediate outputs, derive WP from GAM model
-  ib_data <- xgb_data
-  ib_data$pred_tot_xscore <- 0.5 * ib_data$pred_tot_xscore +
-    0.5 * ib_data$xgb_pred_tot_xscore
-  ib_data$pred_xscore_diff <- 0.5 * ib_data$pred_xscore_diff +
-    0.5 * ib_data$xgb_pred_xscore_diff
-  ib_data$pred_score_diff <- 0.5 * ib_data$pred_score_diff +
-    0.5 * ib_data$xgb_pred_score_diff
-  ib_data$pred_win <- predict(
-    gam_result$models$win, newdata = ib_data, type = "response"
-  )
-  all_input_blend_preds[[i]] <- .format_match_preds(ib_data[test_mask, ])
-}
-
-cli::cli_alert_success("Rolling evaluation complete")
-
-# Combine all out-of-sample predictions ----
-gam_preds <- bind_rows(all_gam_preds) |>
-  mutate(
-    home_win = ifelse(margin > 0, 1, ifelse(margin == 0, 0.5, 0)),
-    home_team_chr = torp_replace_teams(as.character(home_team))
-  )
-
-xgb_preds <- bind_rows(all_xgb_preds) |>
-  mutate(
-    home_win = ifelse(margin > 0, 1, ifelse(margin == 0, 0.5, 0)),
-    home_team_chr = torp_replace_teams(as.character(home_team))
-  )
-
-# Output blend (legacy): 50/50 average of final probabilities
-blend_preds <- gam_preds |>
-  mutate(
-    pred_win = 0.5 * gam_preds$pred_win + 0.5 * xgb_preds$pred_win,
-    pred_margin = 0.5 * gam_preds$pred_margin + 0.5 * xgb_preds$pred_margin
-  )
-
-# Input blend: blend intermediate model outputs, derive WP from GAM model
-input_blend_preds <- bind_rows(all_input_blend_preds) |>
-  mutate(
-    home_win = ifelse(margin > 0, 1, ifelse(margin == 0, 0.5, 0)),
-    home_team_chr = torp_replace_teams(as.character(home_team))
-  )
+gam_preds         <- roll$gam_preds
+xgb_preds         <- roll$xgb_preds
+blend_preds       <- roll$blend_preds
+input_blend_preds <- roll$input_blend_preds
+xgb_nrounds       <- roll$xgb_nrounds
+n_test_rounds     <- nrow(roll$test_rounds)
 
 n_oos_matches <- nrow(gam_preds)
 cli::cli_inform("Total out-of-sample predictions: {n_oos_matches} matches")
 
-# Compute metrics helper ----
-.compute_metrics <- function(preds) {
-  list(
-    logloss  = MLmetrics::LogLoss(preds$pred_win, preds$home_win),
-    accuracy = mean(round(preds$pred_win) == preds$home_win) * 100,
-    brier    = mean((preds$pred_win - preds$home_win)^2),
-    mae      = mean(abs(preds$pred_margin - preds$margin)),
-    rmse     = sqrt(mean((preds$pred_margin - preds$margin)^2))
-  )
-}
-
 # Overall metrics ----
 cli::cli_h1("Rolling Out-of-Sample Results")
 
-gam_m <- .compute_metrics(gam_preds)
-xgb_m <- .compute_metrics(xgb_preds)
+gam_m   <- .compute_metrics(gam_preds)
+xgb_m   <- .compute_metrics(xgb_preds)
 blend_m <- .compute_metrics(blend_preds)
-ib_m <- .compute_metrics(input_blend_preds)
+ib_m    <- .compute_metrics(input_blend_preds)
 
 comparison <- data.frame(
   Model = c("GAM", "XGBoost", "Output Blend", "Input Blend"),
@@ -278,6 +97,10 @@ comparison <- data.frame(
   Brier    = round(c(gam_m$brier, xgb_m$brier, blend_m$brier, ib_m$brier), 4),
   MAE      = round(c(gam_m$mae, xgb_m$mae, blend_m$mae, ib_m$mae), 1),
   RMSE     = round(c(gam_m$rmse, xgb_m$rmse, blend_m$rmse, ib_m$rmse), 1),
+  Slope    = round(c(gam_m$slope, xgb_m$slope, blend_m$slope, ib_m$slope), 3),
+  SDRatio  = round(c(gam_m$sd_ratio, xgb_m$sd_ratio, blend_m$sd_ratio, ib_m$sd_ratio), 3),
+  Cor      = round(c(gam_m$cor, xgb_m$cor, blend_m$cor, ib_m$cor), 3),
+  CloseMAE = round(c(gam_m$close_mae, xgb_m$close_mae, blend_m$close_mae, ib_m$close_mae), 1),
   stringsAsFactors = FALSE
 )
 
@@ -311,7 +134,7 @@ season_breakdown <- bind_rows(
 cat("\n=== Per-Season Breakdown ===\n")
 print(as.data.frame(season_breakdown), row.names = FALSE)
 
-# Calibration bins ----
+# Calibration bins (win probability) ----
 cal_breaks <- c(0, 0.3, 0.4, 0.5, 0.6, 0.7, 0.85, 1)
 cal_labels <- c("<30%", "30-40%", "40-50%", "50-60%", "60-70%", "70-85%", ">85%")
 
@@ -342,6 +165,28 @@ cal_table <- gam_preds |>
 
 cat("\n=== Calibration Bins (mean pred % vs actual win %) ===\n")
 print(as.data.frame(cal_table), row.names = FALSE)
+
+# WS0: Margin calibration by predicted-margin bucket (actionable, pre-game view) ----
+margin_bucket_report <- bind_rows(
+  margin_calibration_by_pred_bucket(gam_preds)         |> mutate(Model = "GAM", .before = 1),
+  margin_calibration_by_pred_bucket(xgb_preds)         |> mutate(Model = "XGBoost", .before = 1),
+  margin_calibration_by_pred_bucket(blend_preds)       |> mutate(Model = "Output Blend", .before = 1),
+  margin_calibration_by_pred_bucket(input_blend_preds) |> mutate(Model = "Input Blend", .before = 1)
+)
+
+cat("\n=== Margin Calibration by Predicted-Margin Bucket ===\n")
+print(as.data.frame(margin_bucket_report), row.names = FALSE)
+
+# WS0: MAE by actual-margin bucket (diagnostic only, not pre-game observable) ----
+actual_bucket_report <- bind_rows(
+  mae_by_actual_bucket(gam_preds)         |> mutate(Model = "GAM", .before = 1),
+  mae_by_actual_bucket(xgb_preds)         |> mutate(Model = "XGBoost", .before = 1),
+  mae_by_actual_bucket(blend_preds)       |> mutate(Model = "Output Blend", .before = 1),
+  mae_by_actual_bucket(input_blend_preds) |> mutate(Model = "Input Blend", .before = 1)
+)
+
+cat("\n=== MAE by Actual-Margin Bucket (diagnostic) ===\n")
+print(as.data.frame(actual_bucket_report), row.names = FALSE)
 
 # Squiggle Comparison ----
 cli::cli_h2("Squiggle Model Comparison")
@@ -456,13 +301,158 @@ if (!is.null(squiggle_tips) && nrow(squiggle_tips) > 0) {
 
 tictoc::toc()
 
+# WS0: Submitted tips vs harness variants — champion identification + stop condition ----
+# FABLE-MATCH-MAE-PLAN.md WS0 deliverables 5-6: compute the same stats directly
+# on torp's actually-submitted 2026 Squiggle tips (source "In The Game"), then
+# identify which harness variant best matches them (G4 champion) and check the
+# stop condition (no variant reproducing the submitted slope ~0.80 +/- 0.05
+# would mean the defect lives in the serve path, not the model).
+cli::cli_h1("WS0: Submitted Tips vs Harness Variants")
+
+submitted_stats <- NULL
+champion_variant <- NA_character_
+stop_condition_triggered <- NA
+
+sub_games_2026 <- tryCatch(
+  fitzRoy::fetch_squiggle_data("games", year = 2026),
+  error = function(e) { cli::cli_warn("Failed to fetch Squiggle games: {e$message}"); NULL }
+)
+sub_tips_2026 <- tryCatch(
+  fitzRoy::fetch_squiggle_data("tips", year = 2026),
+  error = function(e) { cli::cli_warn("Failed to fetch Squiggle tips: {e$message}"); NULL }
+)
+
+if (!is.null(sub_games_2026) && !is.null(sub_tips_2026)) {
+
+  sub_games <- sub_games_2026 |>
+    filter(complete == 100) |>
+    transmute(
+      gameid = as.integer(id),
+      round = as.integer(round),
+      hteam_norm = torp_replace_teams(hteam),
+      actual_margin = as.numeric(hscore) - as.numeric(ascore)
+    )
+
+  submitted_raw <- sub_tips_2026 |>
+    filter(source == "In The Game") |>
+    mutate(
+      gameid = as.integer(gameid),
+      round = as.integer(round),
+      hmargin = as.numeric(hmargin),
+      hconfidence = as.numeric(hconfidence),
+      hteam_norm = torp_replace_teams(hteam)
+    ) |>
+    inner_join(sub_games |> select(gameid, actual_margin), by = "gameid") |>
+    filter(!is.na(hmargin), !is.na(hconfidence))
+
+  n_submitted <- nrow(submitted_raw)
+  cli::cli_inform("Submitted 'In The Game' Squiggle tips found: {n_submitted}")
+
+  if (n_submitted >= 10) {
+    submitted_preds <- submitted_raw |>
+      transmute(
+        round, hteam_norm,
+        pred_margin = hmargin,
+        pred_win = hconfidence / 100,
+        margin = actual_margin,
+        home_win = ifelse(actual_margin > 0, 1, ifelse(actual_margin == 0, 0.5, 0))
+      )
+
+    submitted_stats <- .compute_metrics(submitted_preds)
+
+    cat("\n=== Submitted 2026 Squiggle Tips ('In The Game') — Direct Stats ===\n")
+    cat(sprintf(
+      "N=%d  MAE=%.2f  RMSE=%.2f  Brier=%.4f  Slope=%.3f  Cor=%.3f  SDRatio=%.3f  CloseMAE(n=%d)=%.2f\n",
+      n_submitted, submitted_stats$mae, submitted_stats$rmse, submitted_stats$brier,
+      submitted_stats$slope, submitted_stats$cor, submitted_stats$sd_ratio,
+      submitted_stats$close_n, submitted_stats$close_mae
+    ))
+
+    # 2026-only slice of each harness variant, for apples-to-apples comparison
+    # (submitted tips only exist for 2026 — diagnosis Finding 6)
+    variant_list_2026 <- list(
+      GAM            = gam_preds |> filter(season == 2026),
+      XGBoost        = xgb_preds |> filter(season == 2026),
+      `Output Blend` = blend_preds |> filter(season == 2026),
+      `Input Blend`  = input_blend_preds |> filter(season == 2026)
+    )
+
+    variant_2026_metrics <- lapply(variant_list_2026, .compute_metrics)
+
+    # Correlation of each variant's predicted margin vs submitted-tips predicted
+    # margin, on the SAME matched games — this identifies the G4 champion.
+    corr_table <- purrr::imap_dfr(variant_list_2026, function(preds, label) {
+      joined <- preds |>
+        mutate(hteam_norm = torp_replace_teams(as.character(home_team))) |>
+        inner_join(
+          submitted_preds |> select(round, hteam_norm,
+                                     sub_pred_margin = pred_margin, sub_pred_win = pred_win),
+          by = c("round", "hteam_norm")
+        )
+      m <- variant_2026_metrics[[label]]
+      data.frame(
+        Model = label,
+        N_matched = nrow(joined),
+        CorMarginVsSubmitted = if (nrow(joined) >= 3) round(cor(joined$pred_margin, joined$sub_pred_margin), 3) else NA_real_,
+        CorWinVsSubmitted = if (nrow(joined) >= 3) round(cor(joined$pred_win, joined$sub_pred_win), 3) else NA_real_,
+        Slope2026 = round(m$slope, 3),
+        MAE2026 = round(m$mae, 2),
+        CloseMAE2026 = round(m$close_mae, 2),
+        stringsAsFactors = FALSE
+      )
+    })
+
+    cat("\n=== WS0 Champion Identification: Correlation to Submitted Tips (2026) ===\n")
+    print(corr_table, row.names = FALSE)
+
+    champion_variant <- corr_table$Model[which.max(corr_table$CorMarginVsSubmitted)]
+    cli::cli_alert_info("Champion variant (highest correlation to submitted tips): {champion_variant}")
+
+    # WS0 stop condition: does ANY variant reproduce the submitted slope ~0.80 (+/-0.05)?
+    slope_target <- 0.80
+    slope_tol <- 0.05
+    slopes_2026 <- vapply(variant_2026_metrics, function(m) m$slope, numeric(1))
+    reproduces <- abs(slopes_2026 - slope_target) <= slope_tol
+    stop_condition_triggered <- !any(reproduces)
+
+    cat("\n=== WS0 Stop Condition Check ===\n")
+    cat(sprintf("Submitted-tips slope: %.3f (target band [%.2f, %.2f])\n",
+                submitted_stats$slope, slope_target - slope_tol, slope_target + slope_tol))
+    for (nm in names(slopes_2026)) {
+      cat(sprintf("  %-14s slope=%.3f  %s\n", nm, slopes_2026[[nm]],
+                  if (reproduces[[nm]]) "REPRODUCES" else "does not reproduce"))
+    }
+    if (stop_condition_triggered) {
+      cli::cli_alert_danger("WS0 STOP CONDITION TRIGGERED: no harness variant reproduces the submitted slope ~0.80 (+/-0.05). Escalate to a serve-path audit (blend block, forecast weather, submission staleness) before running WS1-WS5.")
+    } else {
+      cli::cli_alert_success("WS0 stop condition NOT triggered: at least one variant reproduces the submitted slope.")
+    }
+
+    # Demonstration + sanity check of boot_mae_diff() (E5 helper): Input Blend
+    # vs GAM-only, pooled TEST_SEASONS window.
+    boot_demo <- boot_mae_diff(input_blend_preds, gam_preds, B = 2000)
+    cat("\n=== boot_mae_diff() demo: Input Blend vs GAM (pooled", paste(TEST_SEASONS, collapse = "-"), ") ===\n")
+    cat(sprintf("N matches=%d  MAE diff (InputBlend-GAM)=%.3f  95%% CI [%.3f, %.3f]\n",
+                boot_demo$n_matches, boot_demo$mae_diff, boot_demo$mae_ci[1], boot_demo$mae_ci[2]))
+  } else {
+    cli::cli_warn("Fewer than 10 submitted 'In The Game' tips found for 2026 — skipping champion identification.")
+  }
+} else {
+  cli::cli_warn("Could not fetch Squiggle games/tips for 2026 — skipping WS0 champion identification.")
+}
+
 # Summary ----
 # Evaluation only -- production match GAMs have exactly one publisher,
 # torp::run_predictions_pipeline() (daily CI + rebuild Phase 9). This script
 # never saves/uploads a production match_gams.rds.
 cat("\n=== Final Summary ===\n")
 cat("Rolling OOS evaluation:", n_oos_matches, "matches across", n_test_rounds, "rounds\n")
-cat("GAM        Brier:", round(gam_m$brier, 4), "| MAE:", round(gam_m$mae, 1), "| RMSE:", round(gam_m$rmse, 1), "\n")
-cat("XGB        Brier:", round(xgb_m$brier, 4), "| MAE:", round(xgb_m$mae, 1), "| RMSE:", round(xgb_m$rmse, 1), "\n")
-cat("Out Blend  Brier:", round(blend_m$brier, 4), "| MAE:", round(blend_m$mae, 1), "| RMSE:", round(blend_m$rmse, 1), "\n")
-cat("In Blend   Brier:", round(ib_m$brier, 4), "| MAE:", round(ib_m$mae, 1), "| RMSE:", round(ib_m$rmse, 1), "\n")
+cat("GAM        Brier:", round(gam_m$brier, 4), "| MAE:", round(gam_m$mae, 1), "| RMSE:", round(gam_m$rmse, 1), "| Slope:", round(gam_m$slope, 3), "\n")
+cat("XGB        Brier:", round(xgb_m$brier, 4), "| MAE:", round(xgb_m$mae, 1), "| RMSE:", round(xgb_m$rmse, 1), "| Slope:", round(xgb_m$slope, 3), "\n")
+cat("Out Blend  Brier:", round(blend_m$brier, 4), "| MAE:", round(blend_m$mae, 1), "| RMSE:", round(blend_m$rmse, 1), "| Slope:", round(blend_m$slope, 3), "\n")
+cat("In Blend   Brier:", round(ib_m$brier, 4), "| MAE:", round(ib_m$mae, 1), "| RMSE:", round(ib_m$rmse, 1), "| Slope:", round(ib_m$slope, 3), "\n")
+if (!is.null(submitted_stats)) {
+  cat("Submitted  Brier:", round(submitted_stats$brier, 4), "| MAE:", round(submitted_stats$mae, 1), "| RMSE:", round(submitted_stats$rmse, 1), "| Slope:", round(submitted_stats$slope, 3), "\n")
+}
+cat("WS0 champion variant (G4):", champion_variant, "\n")
+cat("WS0 stop condition triggered:", isTRUE(stop_condition_triggered), "\n")

@@ -13,6 +13,7 @@
   "shot" = "Shot outcome model - ordered categorical model for shot results",
   "match_gams" = "Sequential GAM pipeline for match predictions (5 models: total_xpoints, xscore_diff, conv_diff, score_diff, win)",
   "match_xgb_pipeline" = "XGBoost pipeline (5 models) for match predictions - evaluation/comparison only",
+  "match_margin_calibration" = "Match margin recalibration sidecar - single-slope temporal-holdout correction for the blended match-model margin (torpverse/docs/plans/FABLE-MATCH-MAE-PLAN.md)",
   "xgb_win" = "Legacy XGBoost match prediction model (superseded by match_gams)",
   "shot_player_df" = "Shot player lookup table - maps player IDs to lumped factor levels for shot model"
 )
@@ -176,6 +177,7 @@ get_models_dir <- function() {
 #'   - "wp_calibration" - WP recalibration sidecar (published atomically with "wp")
 #'   - "shot" or "shot_ocat_mdl" - Shot outcome classification model
 #'   - "match_gams" - Sequential GAM pipeline for match predictions (production)
+#'   - "match_margin_calibration" - Match margin recalibration sidecar (published atomically with "match_gams")
 #'   - "xgb_win" or "xgb_win_model" - Legacy XGBoost match prediction model
 #' @param force_download Logical. If TRUE, downloads fresh copy even if cached locally.
 #' @param verbose Logical. If TRUE, prints status messages.
@@ -193,7 +195,7 @@ load_torp_model <- function(model_name, force_download = FALSE, verbose = TRUE) 
   model_info <- normalize_model_name(model_name)
 
   if (is.null(model_info)) {
-    cli::cli_abort("Unknown model: {model_name}. Available models: ep, wp, wp_calibration, shot, match_gams, xgb_win (legacy)")
+    cli::cli_abort("Unknown model: {model_name}. Available models: ep, wp, wp_calibration, shot, match_gams, match_margin_calibration, xgb_win (legacy)")
   }
 
   model_file <- model_info$file
@@ -447,6 +449,7 @@ normalize_model_name <- function(model_name) {
     xgb_win_model = list(file = "xgb_win_model.rds", tag = "core-models"),
     match_gams = list(file = "match_gams.rds", tag = "core-models"),
     match_xgb_pipeline = list(file = "match_xgb_pipeline.rds", tag = "core-models"),
+    match_margin_calibration = list(file = "match_margin_calibration.rds", tag = "core-models"),
     shot_player_df = list(file = "shot_player_df.rds", tag = "core-models")
   )
 
