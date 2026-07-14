@@ -1,0 +1,80 @@
+﻿=== round2_c7_winfix.R stage: summary ===
+Rscript : ── Attaching core tidyverse packages ──────────────────────── tidyverse 2.0.0 ──
+At line:1 char:1
++ Rscript "C:\dev\torpverse\torpmodels\data-raw\04-match-model\experime ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (── Attaching co...yverse 2.0.0 ──:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+✔ dplyr     1.2.0     ✔ readr     2.1.5
+✔ forcats   1.0.1     ✔ stringr   1.6.0
+✔ ggplot2   4.0.2     ✔ tibble    3.3.1
+✔ lubridate 1.9.5     ✔ tidyr     1.3.2
+✔ purrr     1.2.1     
+── Conflicts ────────────────────────────────────────── tidyverse_conflicts() ──
+✖ dplyr::filter() masks stats::filter()
+✖ dplyr::lag()    masks stats::lag()
+ℹ Use the conflicted package (<http://conflicted.r-lib.org/>) to force all conflicts to become errors
+Warning messages:
+1: package 'ggplot2' was built under R version 4.5.2 
+2: package 'tibble' was built under R version 4.5.2 
+3: package 'tidyr' was built under R version 4.5.2 
+4: package 'purrr' was built under R version 4.5.2 
+5: package 'dplyr' was built under R version 4.5.2 
+6: package 'stringr' was built under R version 4.5.2 
+Warning message:
+package 'xgboost' was built under R version 4.5.3 
+Loading required package: nlme
+
+Attaching package: 'nlme'
+
+The following object is masked from 'package:dplyr':
+
+    collapse
+
+This is mgcv 1.9-3. For overview type 'help("mgcv-package")'.
+
+Attaching package: 'MLmetrics'
+
+The following object is masked from 'package:base':
+
+    Recall
+
+ℹ Loading torp
+torp 1.3.5 - AFL Analytics and Player Rating System
+Data source: https://github.com/peteowen1/torpdata
+Report issues: https://github.com/peteowen1/torp/issues
+team_mdl_df: 2314 rows, seasons 2021, 2022, 2023, 2024, 2025, 2026
+Elo params (WS2 tuned): k=20, hga=45, carryover=0.75
+Warning message:
+join_elo_diff_to_team_mdl_df: 108 rows have NA elo_diff after join (team-name
+mismatch?) 
+
+── Round 2: Final summary ──────────────────────────────────────────────────────
+
+=== 2026 SCREEN (n=153) ===
+Base champion (Input Blend)                          MAE=26.198 RMSE=32.407 Brier=0.1731 Bits=0.2497 Slope=0.836 Cor=0.586 SDRatio=0.701 CloseMAE(n=47)=19.130
+C6 'Everything' (V4b+Elo+V1a recal)                  MAE=25.996 RMSE=32.452 Brier=0.1750 Bits=0.2424 Slope=0.898 Cor=0.578 SDRatio=0.644 CloseMAE(n=47)=16.412
+C7 original (round-1 flat classifier)                MAE=25.575 RMSE=32.358 Brier=0.1807 Bits=0.2152 Slope=0.944 Cor=0.583 SDRatio=0.618 CloseMAE(n=47)=16.809
+C7-fixed: direct XGB margin + GAM win-head           MAE=25.575 RMSE=32.358 Brier=0.1789 Bits=0.2212 Slope=0.944 Cor=0.583 SDRatio=0.618 CloseMAE(n=47)=16.809
+
+=== POOLED 2025:2026 (n=369) -- ship-gate confirmation ===
+C6 'Everything' (current champion)                   MAE=25.545 RMSE=32.295 Brier=0.1741 Bits=0.2471 Slope=0.955 Cor=0.619 SDRatio=0.648 CloseMAE(n=110)=16.791
+C7-fixed (no recal)                                  MAE=25.527 RMSE=32.443 Brier=0.1777 Bits=0.2337 Slope=1.051 Cor=0.616 SDRatio=0.587 CloseMAE(n=110)=15.598
+C7-fixed + V1a recal                                 MAE=25.708 RMSE=32.491 Brier=0.1777 Bits=0.2337 Slope=0.985 Cor=0.613 SDRatio=0.623 CloseMAE(n=110)=16.586
+
+=== G3 ship gate vs C6 champion (MAE=25.545, Bits=0.2471, pooled) ===
+  C7-fixed (no recal)          CI-excl-0=FALSE (diff=-0.017) | Brier-ok=FALSE (diff=+0.00361) | Bits-ok=FALSE (diff=-0.0133) -> FAIL
+  C7-fixed + V1a recal         CI-excl-0=FALSE (diff=+0.163) | Brier-ok=FALSE (diff=+0.00361) | Bits-ok=FALSE (diff=-0.0133) -> FAIL
+
+=== OOF-margin mitigation ===
+C7-fixed (OOF margin -> win-head)                    MAE=25.527 RMSE=32.443 Brier=0.1779 Bits=0.2325 Slope=1.051 Cor=0.616 SDRatio=0.587 CloseMAE(n=110)=15.598
+  C7-fixed (OOF margin)        CI-excl-0=FALSE (diff=-0.017) | Brier-ok=FALSE (diff=+0.00375) | Bits-ok=FALSE (diff=-0.0145) -> FAIL
+
+=== vs Squiggle 2026 field (round-2 task framing; MAE not directly comparable, screen n=153) ===
+Aggregate     : MAE=25.45 bits~=0.325
+Wheelo        : MAE=24.89 bits~=0.318
+Punters       : MAE=25.32 bits~=0.347
+C7-fixed (2026 screen): MAE=25.575 Bits=0.2212
+
+Brier rescue vs round-1 C7 (round-1 disqualifier): see brier deltas above

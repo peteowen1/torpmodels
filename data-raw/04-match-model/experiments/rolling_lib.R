@@ -327,6 +327,7 @@ run_rolling_eval <- function(team_mdl_df,
                               xgb_trainer = .train_xgb_fixed,
                               extra_feature_cols = NULL,
                               cv_extra_feature_cols = NULL,
+                              cv_trainer = NULL,
                               nthreads = 4L,
                               verbose = TRUE) {
   stopifnot(is.function(gam_trainer), is.function(xgb_trainer))
@@ -341,7 +342,19 @@ run_rolling_eval <- function(team_mdl_df,
     cli::cli_h2("Pre-optimising XGBoost nrounds (CV on pre-test-season data)")
     cli::cli_inform("nrounds CV input: {sum(cv_train_mask)/2} matches (seasons < {min(test_seasons)})")
   }
-  xgb_cv_result <- if (!is.null(cv_extra_feature_cols)) {
+  # cv_trainer (round 3, FABLE-MATCH-MAE-PLAN.md wide-window CI extension):
+  # optional override for the nrounds-CV step, function(cv_train_df) ->
+  # list(steps = ...). Needed because torp:::.train_match_xgb() is PRODUCTION
+  # code that keeps evolving underneath this research harness (2026-07-14:
+  # gained elo_diff in base_cols via the "Integrate C6" commit, then a
+  # further uncommitted edit pinned xgb_nthread) -- callers that need to
+  # reproduce an EARLIER cached champion definition byte-for-byte should pass
+  # their own pinned copy here rather than depend on today's live production
+  # behaviour. NULL (default) preserves every existing caller's behaviour
+  # unchanged (falls through to cv_extra_feature_cols / .train_match_xgb()).
+  xgb_cv_result <- if (!is.null(cv_trainer)) {
+    cv_trainer(cv_train_df)
+  } else if (!is.null(cv_extra_feature_cols)) {
     .train_match_xgb_ext(cv_train_df, extra_feature_cols = cv_extra_feature_cols)
   } else {
     .train_match_xgb(cv_train_df)
@@ -671,25 +684,48 @@ boot_mae_diff <- function(preds_a, preds_b, B = 2000, seed = 1234) {
 #' (guarded by a sentinel in that worker's global env) and reuses it for
 #' every subsequent round future_lapply schedules onto that same worker.
 #'
-#' VALIDATED 2026-07-14 (5-round subset, 4 workers) — real caveat found, read
-#' before using this for anything ship-gate-relevant:
-#' GAM predictions matched the sequential path to ~1e-4/1e-6 (float noise
-#' from a different mgcv `nthreads`, harmless). XGBoost/Input-Blend
-#' predictions did NOT match closely (max |pred_margin diff| ~11, max
-#' |pred_win diff| ~0.15) — `tree_method = "hist"` is not deterministic
-#' across different `nthread` values even with a fixed seed (known xgboost
-#' behaviour, not a bug here); this path necessarily runs xgboost at a
-#' capped `xgb_nthread` while run_rolling_eval()'s default is uncapped
-#' (all cores), and that thread-count difference alone is enough to diverge
-#' the trees, compounding over many boosting rounds. CONSEQUENCE: do not
-#' compare a candidate scored via this function against a baseline
-#' established via run_rolling_eval() (or vice versa) for a real MAE/ship
-#' decision — score everything being compared through the SAME path/thread
-#' count. Safe today for: relative screening across many candidates all run
-#' through this same function. Not yet safe for: replacing the sequential
-#' path's role in any ship-gate comparison. Measured speedup on that same
-#' 5-round test was only ~1.07x (worker-startup cost dominates a test this
-#' small) — real speedup at full scale (40+ rounds) is untested.
+#' VALIDATED 2026-07-14 at FULL SCALE (2025:2026 pooled, 48 rounds, 369
+#' matches, default production gam_trainer/xgb_trainer, n_workers=5) — this
+#' supersedes an earlier 5-round smoke test; the caveat below is CONFIRMED,
+#' not resolved, at real scale:
+#' Sequential run_rolling_eval() took 596.9s (9.95 min); parallel took 191.9s
+#' (3.20 min) — a real 3.11x speedup (measured under some concurrent CPU load
+#' from an unrelated script sharing the machine, so treat as approximate,
+#' not a clean isolated benchmark; the 5-round test's ~1.07x was an artifact
+#' of worker-startup overhead dominating a run that small — at full scale
+#' that cost amortises and the speedup is real).
+#' Correctness: GAM predictions are close in aggregate (seq vs par MAE
+#' 25.619 vs 25.637, Brier 0.1718 vs 0.1720) but "~1e-4 float noise" from the
+#' 5-round test UNDERSTATES the full-scale tail — mean |pred_margin diff|
+#' 0.11 but max 4.55 in the worst single round, mean |pred_win diff| 0.0009
+#' but max 0.045 (gam_nthreads 4 sequential vs 2 parallel evidently nudges
+#' mgcv's REML smoothing-parameter search in a handful of rounds; small next
+#' to the xgboost effect below, but not literally negligible).
+#' XGBoost/Input-Blend/Output-Blend predictions did NOT converge with more
+#' data — mean |pred_margin diff| 2.4-4.8 points, MAX 12.6-25.2 points; mean
+#' |pred_win diff| 0.02-0.05, max 0.09-0.28. In aggregate: XGB-only MAE
+#' 26.857 (seq) vs 26.622 (par), a 0.24-point delta; blend MAE 25.923 vs
+#' 25.792, a 0.13-point delta — sized comparably to the real candidate-vs-
+#' champion ΔMAE this repo ships/rejects on (FABLE-MATCH-MAE-PLAN gates are
+#' often 0.1-0.5). Root cause unchanged: `tree_method = "hist"` is not
+#' deterministic across different `nthread` values even with a fixed seed
+#' (known xgboost behaviour, not a bug here); this path necessarily runs
+#' xgboost at a capped `xgb_nthread` while run_rolling_eval()'s default is
+#' uncapped (all cores), and that thread-count difference alone is enough to
+#' diverge the trees, compounding over many boosting rounds — and this does
+#' NOT wash out at 48 rounds vs 5; it's structural, not sampling noise.
+#' CONSEQUENCE / VERDICT: do not compare a candidate scored via this
+#' function against a baseline established via run_rolling_eval() (or vice
+#' versa) for a real MAE/ship decision — the seq-vs-par delta alone is large
+#' enough to be mistaken for a genuine model improvement or regression at
+#' this project's effect sizes. Confirmed safe for: fast relative screening
+#' across many candidates, provided every candidate in the comparison is run
+#' through the SAME path at the SAME thread count (the systematic
+#' divergence then affects all candidates alike and cancels in the
+#' comparison) — a real 3.11x speedup makes this genuinely worth reaching
+#' for at that stage (a ~10 min sequential run becomes ~3 min). Any
+#' apparent winner from a parallel-screened comparison must be re-confirmed
+#' through the sequential run_rolling_eval() before a real ship decision.
 #'
 #' @inheritParams run_rolling_eval
 #' @param torp_path Path to the torp package for workers to devtools::load_all()
