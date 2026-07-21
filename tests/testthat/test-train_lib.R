@@ -404,6 +404,89 @@ test_that("apply_wp_calibration tolerates missing interaction fields and NA flag
   expect_equal(got[2], stats::plogis((0.05 + 0.4) + (1.25 + 0.3) * stats::qlogis(0.6)))
 })
 
+# --- Path B (FABLE-RECAL-PLAN.md §7): leverage_interaction_v1 form --
+
+test_that("wp_leverage_weight ramps to 0 outside the time/margin window and ~1 deep in it", {
+  # deep in the cell: 5 min remaining, 3-point margin
+  expect_equal(env$wp_leverage_weight(5, 3), (1 - 5 / 20) * (1 - 3 / 18))
+  # outside the time ramp (>= 20 min remaining) -> 0 regardless of margin
+  expect_equal(env$wp_leverage_weight(20, 0), 0)
+  expect_equal(env$wp_leverage_weight(25, 0), 0)
+  # outside the margin cap (>= 18 points) -> 0 regardless of time
+  expect_equal(env$wp_leverage_weight(0, 18), 0)
+  expect_equal(env$wp_leverage_weight(0, 40), 0)
+  # never negative, never above 1 (minutes_remaining is never negative in
+  # production -- est_match_remaining is pmax(0L, ...) in clean_pbp.R)
+  mr <- c(0, 10, 30, 100)
+  pd <- c(-50, -18, 0, 18, 50)
+  w <- env$wp_leverage_weight(rep(mr, each = length(pd)), rep(pd, length(mr)))
+  expect_true(all(w >= 0 & w <= 1))
+})
+
+test_that("fit_wp_calibration leverage_interaction_v1 form recovers known (a, b, c)", {
+  set.seed(31)
+  n <- 20000
+  true_a <- -0.05; true_b <- 1.0; true_c <- 0.7
+  minutes_remaining <- stats::runif(n, 0, 80)
+  points_diff <- stats::runif(n, -50, 50)
+  w <- env$wp_leverage_weight(minutes_remaining, points_diff)
+  x <- stats::qlogis(stats::runif(n, 0.02, 0.98))
+  eta <- true_a + (true_b + true_c * w) * x
+  y <- stats::rbinom(n, 1, stats::plogis(eta))
+  preds <- stats::plogis(x)
+
+  # + draw rows that must be excluded
+  y_all <- c(y, rep(0.5, 60))
+  p_all <- c(preds, rep(0.5, 60))
+  w_all <- c(w, rep(0, 60))
+
+  fit <- env$fit_wp_calibration(p_all, y_all, w = w_all, form = "leverage_interaction_v1")
+  expect_identical(fit$form, "leverage_interaction_v1")
+  expect_lt(abs(fit$a - true_a), 0.08)
+  expect_lt(abs(fit$b - true_b), 0.08)
+  expect_lt(abs(fit$c - true_c), 0.12)
+  expect_identical(fit$a_q4c, 0)
+  expect_identical(fit$b_q4c, 0)
+})
+
+test_that("fit_wp_calibration leverage_interaction_v1 form requires w and enforces monotonicity at w = 0/1", {
+  set.seed(32)
+  n <- 400
+  x <- stats::qlogis(stats::runif(n, 0.05, 0.95))
+  y <- stats::rbinom(n, 1, stats::plogis(x))
+  expect_error(
+    env$fit_wp_calibration(stats::plogis(x), y, form = "leverage_interaction_v1"),
+    "w"
+  )
+
+  # b + c < 0 at w = 1 must be rejected (b > 0 but the w = 1 slope inverts)
+  w <- rep(c(0, 1), length.out = n)
+  eta <- ifelse(w == 1, -1.5 * x, 1.0 * x)
+  y2 <- stats::rbinom(n, 1, stats::plogis(eta))
+  expect_error(
+    env$fit_wp_calibration(stats::plogis(x), y2, w = w, form = "leverage_interaction_v1")
+  )
+})
+
+test_that("apply_wp_calibration leverage_interaction_v1 matches the closed-form formula and requires w", {
+  calib <- list(a = 0.1, b = 1.0, c = 0.5, form = "leverage_interaction_v1")
+  p <- c(0.2, 0.5, 0.8)
+  w <- c(0, 0.4, 1)
+
+  got <- env$apply_wp_calibration(p, calib, w = w)
+  expect_equal(got, stats::plogis(0.1 + (1.0 + 0.5 * w) * stats::qlogis(p)))
+
+  expect_error(
+    env$apply_wp_calibration(p, calib),
+    "w"
+  )
+
+  # missing/non-finite c treated as 0
+  calib_no_c <- list(a = 0.1, b = 1.0, form = "leverage_interaction_v1")
+  expect_equal(env$apply_wp_calibration(p, calib_no_c, w = w),
+              stats::plogis(0.1 + 1.0 * stats::qlogis(p)))
+})
+
 test_that("wp_calibration_boundary_jump matches hand-computed values and is 0 for global form", {
   # a = 0, b = 1, a_q4c = 0.5, b_q4c = 0: in-cell = plogis(0.5 + qlogis(p)),
   # out-of-cell = p. At p = 0.5 the jump is plogis(0.5) - 0.5.
@@ -478,7 +561,7 @@ test_that("validate_wp_temporal_slope reports SE on a thin (< 150 deduped obs) q
 .fake_epv_for_wiring_tests <- function() {
   data.frame(
     torp_match_id = rep(1:4, each = 5), match_id = rep(1:4, each = 5),
-    period = 4L, points_diff = 0, est_match_elapsed = 0,
+    period = 4L, points_diff = 0, est_match_elapsed = 0, est_match_remaining = 600,
     label_wp = rep(c(0, 1), 10)
   )
 }
@@ -541,14 +624,21 @@ test_that("calibrate = TRUE (default): fits + gates + saves wp_calibration.rds a
         folds = list(seq_len(nrow(model_data_wp))))
   }
 
-  fake_meta <- data.frame(period = 4L, points_diff = 0, est_match_elapsed = 0, match_id = 1:4)
+  fake_meta <- data.frame(period = 4L, points_diff = 0, est_match_elapsed = 0,
+                          est_match_remaining = 600, match_id = 1:4)
   temporal_called_with <- NULL
   env$fit_wp_temporal_variant <- function(model_data_epv, gate_season, ...) {
     temporal_called_with <<- gate_season
     list(preds = rep(0.6, 4), labels = c(0, 1, 0, 1), meta_cols = fake_meta)
   }
-  env$fit_wp_calibration <- function(preds, labels, ...) {
-    list(a = 0, b = 1.2, a_q4c = 0, b_q4c = 0, form = "global")
+  env$fit_wp_calibration <- function(preds, labels, is_q4close = NULL, w = NULL,
+                                     form = c("global", "q4close_interaction", "leverage_interaction_v1")) {
+    form <- match.arg(form)
+    if (form == "leverage_interaction_v1") {
+      list(a = 0, b = 1.2, c = 0.3, form = "leverage_interaction_v1")
+    } else {
+      list(a = 0, b = 1.2, a_q4c = 0, b_q4c = 0, form = "global")
+    }
   }
   env$wp_gate_slope <- function(preds, labels, meta_cols, cell, detail = FALSE) {
     if (detail) list(slope = 1.0, se = 0.05, n = 200) else 1.0
@@ -580,15 +670,16 @@ test_that("calibrate = TRUE (default): fits + gates + saves wp_calibration.rds a
   saved_calib <- readRDS(file.path(out_dir, "wp_calibration.rds"))
   expect_equal(saved_calib$a, 0)
   expect_equal(saved_calib$b, 1.2)
+  expect_equal(saved_calib$c, 0.3)
   expect_equal(saved_calib$slope_after, 1.0)
-  expect_identical(saved_calib$form, "global")
-  expect_equal(saved_calib$a_q4c, 0)
-  expect_equal(saved_calib$b_q4c, 0)
+  expect_identical(saved_calib$form, "leverage_interaction_v1")
+  expect_identical(saved_calib$ramp_mins, 20)
+  expect_identical(saved_calib$margin_cap, 18)
   expect_identical(saved_calib$cell, list(period = 4, margin_abs_max = 12))
   # split-half bookkeeping: 4 unique fake matches -> 2 + 2
   expect_identical(saved_calib$n_fit_half_matches + saved_calib$n_gate_half_matches, 4L)
   expect_true(is.finite(saved_calib$max_boundary_jump))
-  expect_equal(saved_calib$max_boundary_jump, 0)   # global form: no cell boundary
+  expect_equal(saved_calib$max_boundary_jump, 0)   # leverage form: continuous, no boundary by construction
 })
 
 test_that("a score_wp_rows() abort inside the report-only in-progress-season diagnostic is caught, not propagated", {
@@ -614,12 +705,19 @@ test_that("a score_wp_rows() abort inside the report-only in-progress-season dia
         folds = list(seq_len(nrow(model_data_wp))))
   }
 
-  fake_meta <- data.frame(period = 4L, points_diff = 0, est_match_elapsed = 0, match_id = 1:4)
+  fake_meta <- data.frame(period = 4L, points_diff = 0, est_match_elapsed = 0,
+                          est_match_remaining = 600, match_id = 1:4)
   env$fit_wp_temporal_variant <- function(...) {
     list(preds = rep(0.6, 4), labels = c(0, 1, 0, 1), meta_cols = fake_meta)
   }
-  env$fit_wp_calibration <- function(preds, labels, ...) {
-    list(a = 0, b = 1.2, a_q4c = 0, b_q4c = 0, form = "global")
+  env$fit_wp_calibration <- function(preds, labels, is_q4close = NULL, w = NULL,
+                                     form = c("global", "q4close_interaction", "leverage_interaction_v1")) {
+    form <- match.arg(form)
+    if (form == "leverage_interaction_v1") {
+      list(a = 0, b = 1.2, c = 0.3, form = "leverage_interaction_v1")
+    } else {
+      list(a = 0, b = 1.2, a_q4c = 0, b_q4c = 0, form = "global")
+    }
   }
   env$wp_gate_slope <- function(preds, labels, meta_cols, cell, detail = FALSE) {
     if (detail) list(slope = 1.0, se = 0.05, n = 200) else 1.0
@@ -673,19 +771,23 @@ test_that("slope_gate = FALSE warns loudly but never calls validate_wp_temporal_
         X = matrix(0, nrow(model_data_wp), 1), y = rep(0, nrow(model_data_wp)),
         folds = list(seq_len(nrow(model_data_wp))))
   }
-  fake_meta <- data.frame(period = 4L, points_diff = 0, est_match_elapsed = 0, match_id = 1:4)
+  fake_meta <- data.frame(period = 4L, points_diff = 0, est_match_elapsed = 0,
+                          est_match_remaining = 600, match_id = 1:4)
   env$fit_wp_temporal_variant <- function(...) {
     list(preds = rep(0.6, 4), labels = c(0, 1, 0, 1), meta_cols = fake_meta)
   }
-  interaction_fit_requested <- FALSE
-  env$fit_wp_calibration <- function(preds, labels, is_q4close = NULL,
-                                     form = c("global", "q4close_interaction")) {
+  leverage_fit_requested <- FALSE
+  env$fit_wp_calibration <- function(preds, labels, is_q4close = NULL, w = NULL,
+                                     form = c("global", "q4close_interaction", "leverage_interaction_v1")) {
     form <- match.arg(form)
-    if (form == "q4close_interaction") interaction_fit_requested <<- TRUE
-    list(a = 0, b = 1.2, a_q4c = 0, b_q4c = 0, form = form)
+    if (form == "leverage_interaction_v1") {
+      leverage_fit_requested <<- TRUE
+      list(a = 0, b = 1.2, c = 0.3, form = "leverage_interaction_v1")
+    } else {
+      list(a = 0, b = 1.2, a_q4c = 0, b_q4c = 0, form = "global")
+    }
   }
   # a slope that WOULD breach the 0.10 gate -- proves the gate never ran
-  # (and, breaching on the fit half, that the escalation path still fires)
   env$wp_gate_slope <- function(preds, labels, meta_cols, cell, detail = FALSE) {
     if (detail) list(slope = 1.35, se = 0.08, n = 200) else 1.35
   }
@@ -707,11 +809,12 @@ test_that("slope_gate = FALSE warns loudly but never calls validate_wp_temporal_
     "slope_gate = FALSE"
   )
   expect_identical(result$wp_calibration$model, "wp_calibration")
-  # escalation is a property of the measured breach, not of slope_gate
-  expect_true(interaction_fit_requested)
+  # Path B (§7): the leverage-interaction form is fit unconditionally (it IS
+  # the shipped form, not a conditional escalation) regardless of slope_gate.
+  expect_true(leverage_fit_requested)
 })
 
-test_that("END-TO-END escalation: global fails fit-half q4close, interaction ships and passes the split-half gate", {
+test_that("END-TO-END Path B: global can't fix q4close without overcorrecting all-rows, leverage form ships and passes the split-half gate", {
   skip_if_not_installed("torp")
 
   # Fresh env: the wiring tests above permanently mock the shared env's
@@ -719,27 +822,39 @@ test_that("END-TO-END escalation: global fails fit-half q4close, interaction shi
   env2 <- new.env()
   source(lib, local = env2)
 
-  # Synthetic gate-season rows. Out-of-cell rows are perfectly calibrated
-  # (slope 1); in-cell (Q4/close) rows are too flat (actual slope 1.6 in
-  # the preds). A single global (a, b) cannot fix both arms -> the fit-half
-  # q4close slope breaches -> D1 escalation -> the interaction form fixes
-  # the cell -> the gate passes. Unique match_id per row keeps the q4close
-  # dedup a no-op.
+  # Synthetic gate-season rows mirroring the REAL 2026-07-21 gate failure
+  # (WP-SHARPNESS-RESULTS.md §7): a small Q4/close minority (~1/6 of rows,
+  # like real data) is badly flat (true slope up to 2.2 deep in the cell),
+  # the bulk is already well-calibrated (slope 1). A single global (a, b)
+  # dominated by the majority either leaves the minority under-corrected or
+  # overcorrects the majority to fix it -- the leverage-interaction form
+  # (fit on the SAME rows via a continuous per-row w, not an average)
+  # recovers the true row-level relationship regardless of the class
+  # imbalance. Unique match_id per row keeps the q4close dedup a no-op.
   #
-  # Determinism trick: the split-half gate would be flaky if the two halves
-  # were independent samples (with ~1500 cell obs per half, the halves'
-  # slopes differ by sampling noise comparable to the 0.10 gate). So both
-  # halves get the IDENTICAL (x, y, in_cell) pair multiset: we reproduce
-  # the trainer's seed-stable make_match_folds(k = 2) split up front and
-  # assign pair i to the i-th match of each half. The wiring under test
-  # (fit on half 1, gate on half 2) is fully exercised; the gate outcome
-  # becomes deterministic.
+  # Determinism trick (unchanged from the retired escalation test): the
+  # split-half gate would be flaky if the two halves were independent
+  # samples. So both halves get the IDENTICAL (minutes_remaining,
+  # points_diff, x, y) pair multiset: reproduce the trainer's seed-stable
+  # make_match_folds(k = 2) split up front and assign pair i to the i-th
+  # match of each half. The wiring under test (fit on half 1, gate on half
+  # 2) is fully exercised; the gate outcome becomes deterministic.
   set.seed(99)
   n_pairs <- 3000
-  x <- stats::qlogis(stats::runif(n_pairs, 0.03, 0.97))
-  in_cell_pair <- rep(c(TRUE, FALSE), length.out = n_pairs)
-  eta <- ifelse(in_cell_pair, 1.6 * x, 1.0 * x)
-  y_pair <- stats::rbinom(n_pairs, 1, stats::plogis(eta))
+  in_cell_pair <- rep(c(TRUE, rep(FALSE, 5)), length.out = n_pairs)   # ~1/6 in-cell
+
+  minutes_remaining_pair <- ifelse(in_cell_pair,
+                                   stats::runif(n_pairs, 0, 20),
+                                   stats::runif(n_pairs, 20, 80))
+  points_diff_pair <- ifelse(in_cell_pair,
+                             stats::runif(n_pairs, -12, 12),
+                             stats::runif(n_pairs, -40, 40))
+  w_pair <- env2$wp_leverage_weight(minutes_remaining_pair, points_diff_pair)
+
+  x_pair <- stats::qlogis(stats::runif(n_pairs, 0.03, 0.97))
+  true_a <- 0; true_b <- 1.0; true_c <- 1.2
+  eta_pair <- true_a + (true_b + true_c * w_pair) * x_pair
+  y_pair <- stats::rbinom(n_pairs, 1, stats::plogis(eta_pair))
 
   match_ids <- paste0("m", seq_len(2 * n_pairs))
   half_pre <- env2$make_match_folds(match_ids, k = 2L)  # same seed/construction as the trainer
@@ -747,12 +862,16 @@ test_that("END-TO-END escalation: global fails fit-half q4close, interaction shi
   pair_of_row[half_pre == 1L] <- seq_len(n_pairs)
   pair_of_row[half_pre == 2L] <- seq_len(n_pairs)
 
-  preds <- stats::plogis(x)[pair_of_row]
+  preds <- stats::plogis(x_pair)[pair_of_row]
   labels <- y_pair[pair_of_row]
+  minutes_remaining_full <- minutes_remaining_pair[pair_of_row]
+  points_diff_full <- points_diff_pair[pair_of_row]
+  est_match_remaining_full <- minutes_remaining_full * 60
   fake_meta <- data.frame(
     period = ifelse(in_cell_pair[pair_of_row], 4L, 1L),
-    points_diff = 0,
-    est_match_elapsed = 3300,
+    points_diff = points_diff_full,
+    est_match_elapsed = 4800 - est_match_remaining_full,
+    est_match_remaining = est_match_remaining_full,
     match_id = match_ids
   )
 
@@ -787,20 +906,23 @@ test_that("END-TO-END escalation: global fails fit-half q4close, interaction shi
   expect_message(
     env2$train_core_models(models = "wp", seasons = 2021:2024, upload = FALSE,
                            wp_ep_source = "cv", output_dir = out_dir),
-    "escalating to the D1 q4close-interaction form"
+    "Fitted leverage-interaction calibration"
   )
 
   saved <- readRDS(file.path(out_dir, "wp_calibration.rds"))
-  expect_identical(saved$form, "q4close_interaction")
-  expect_true(saved$b_q4c > 0.25)              # recovered the in-cell extra slope
-  expect_true(abs(saved$b - 1) < 0.15)         # out-of-cell arm stays ~identity
-  # stage-1 record: the global form's gate-half q4close slope was a breach
+  expect_identical(saved$form, "leverage_interaction_v1")
+  expect_identical(saved$ramp_mins, 20)
+  expect_identical(saved$margin_cap, 18)
+  expect_true(saved$c > 0.5)                    # recovered a real leverage slope
+  expect_true(abs(saved$b - 1) < 0.25)          # w = 0 (out-of-cell) arm stays ~identity
+  # report-only record: the retired D1 global form's gate-half q4close slope
+  # was a breach -- exactly the defect Path B exists to fix.
   expect_true(abs(saved$slope_q4close_global - 1) > 0.10)
-  # final: the shipped (interaction) form passes the gate on the held-out half
+  # final: the shipped (leverage) form passes the gate on the held-out half
   expect_true(abs(saved$slope_q4close_after - 1) <= 0.10)
   expect_true(abs(saved$slope_after - 1) <= 0.10)
   # split-half bookkeeping recorded
   expect_identical(saved$n_fit_half_matches + saved$n_gate_half_matches, length(unique(fake_meta$match_id)))
-  # boundary jump is real (non-zero) for the interaction form and finite
-  expect_true(is.finite(saved$max_boundary_jump) && saved$max_boundary_jump > 0)
+  # leverage form has no cell-boundary jump by construction (continuous weight)
+  expect_equal(saved$max_boundary_jump, 0)
 })
