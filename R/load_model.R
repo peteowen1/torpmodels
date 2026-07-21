@@ -524,10 +524,19 @@ safe_read_rds <- function(path, label = basename(path)) {
 #' stat-models, as of this writing). Each download attempt lands in a
 #' tempdir beside the destination and is moved into place atomically via
 #' `vb_atomic_write()`, with a `<local_path>.sha256` sidecar written
-#' alongside on success. A failed integrity check deletes the temp and
-#' retries the SAME method once before falling through to the next method
-#' (piggyback, then a direct release URL); a pre-existing `local_path` is
-#' never touched by a failed download.
+#' alongside on success. Three retry layers, innermost first: (1) the raw
+#' fetch call itself (`piggyback::pb_download()` / `download.file()`) is
+#' wrapped in `.vb_retry()`, which retries up to 3 attempts total with 2s
+#' then 5s backoff on transient errors -- this is the fix for
+#' torpdata#66/#68, where GitHub's release-asset CDN throws sporadic 5xx
+#' errors that clear on their own within a few seconds; a confirmed-absent
+#' (404) error is excluded via `vb_classify_error()` and re-raised
+#' immediately, never retried. (2) A failed integrity check (corrupt/short
+#' download that DID complete a fetch) deletes the temp and retries the
+#' whole attempt (including its own inner `.vb_retry()`) once more for the
+#' SAME method. (3) If piggyback still fails after both layers, falls
+#' through to a direct release URL. A pre-existing `local_path` is never
+#' touched by a failed download.
 #' @keywords internal
 #' @importFrom cli cli_inform cli_warn cli_abort
 download_model_from_release <- function(file_name, release_tag, local_path, verbose = TRUE) {
@@ -552,7 +561,15 @@ download_model_from_release <- function(file_name, release_tag, local_path, verb
     dir.create(tmpdir)
     on.exit(unlink(tmpdir, recursive = TRUE), add = TRUE)
 
-    fetch_fn(tmpdir)
+    # Transient-network retry layer (torpdata#66/#68): GitHub's release-asset
+    # CDN throws sporadic 5xx errors from piggyback::pb_download() /
+    # download.file() that usually clear within a few seconds. This wraps
+    # only the raw fetch call -- confirmed-absent (404) errors are excluded
+    # via should_retry and propagate immediately, never retried here.
+    .vb_retry(
+      function() fetch_fn(tmpdir),
+      should_retry = function(e) vb_classify_error(e) != "absent"
+    )
 
     tmp <- file.path(tmpdir, file_name)
     if (!file.exists(tmp) || file.size(tmp) == 0L) {
