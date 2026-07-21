@@ -1,0 +1,60 @@
+﻿=== ws_psr_epr_1_psr_vintage.R stage: rebuild_walkforward ===
+Rscript : Warning messages:
+At line:2 char:1
++ Rscript "data-raw\04-match-model\experiments\ws_psr_epr_1_psr_vintage ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Warning messages::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+1: package 'ggplot2' was built under R version 4.5.2 
+2: package 'tibble' was built under R version 4.5.2 
+3: package 'tidyr' was built under R version 4.5.2 
+4: package 'purrr' was built under R version 4.5.2 
+5: package 'dplyr' was built under R version 4.5.2 
+6: package 'stringr' was built under R version 4.5.2 
+7: package 'xgboost' was built under R version 4.5.3 
+8: package 'data.table' was built under R version 4.5.2 
+9: package 'glmnet' was built under R version 4.5.2 
+torp 1.3.5 - AFL Analytics and Player Rating System
+Data source: https://github.com/peteowen1/torpdata
+Report issues: https://github.com/peteowen1/torp/issues
+
+── WS1 rebuild: team_mdl_df with walk-forward psr_df ───────────────────────────
+
+── [ws1] Loading data (psr_df injected) ──
+
+Disk cache HIT for teams 2021 (9522 rows)
+Disk cache HIT for teams 2022 (9522 rows)
+Disk cache HIT for teams 2023 (9936 rows)
+Disk cache HIT for teams 2024 (11220 rows)
+Disk cache HIT for teams 2025 (11232 rows)
+Loaded: fixtures=1269, results=1224, teams=59850, ratings=130116,
+psr_df(custom)=176055
+
+── [ws1] Building fixture features ──
+
+── [ws1] Processing lineups (custom psr_df) ──
+
+Replacing 1065 (2%) NA EPR ratings with prior (-2)
+Replacing 1205 (2.2%) NA PSR ratings with prior (-2)
+
+── [ws1] Computing features ──
+
+── [ws1] Loading weather ──
+
+Weight anchor date: 2026-08-17
+
+── [ws1] Building model dataset ──
+
+team_mdl_df: 2314 rows, 211 cols
+Weather joined: 2314 of 2314 rows (100%)
+Rebuild (walk-forward) completed in 0.27 min
+team_mdl_df_wf: 2314 rows, seasons 2021, 2022, 2023, 2024, 2025, 2026
+✔ Saved ws1_team_mdl_df_walkforward.rds
+Warning messages:
+1: tag "reference-data" on "peteowen1/torpdata" has no bus_manifest.json --
+running unverified (legacy mode) 
+2: Fetched roster for 171 of 207 matches. 
+3: 312 unrecognised team names: "KUW", "KUW", "KUW", "KUW", "KUW", "KUW", "KUW",
+"KUW", "KUW", "KUW", "KUW", "KUW", "KUW", "KUW", "KUW", "KUW", "KUW", "KUW", …,
+"EUR", and "EUR" 

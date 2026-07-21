@@ -1,0 +1,49 @@
+﻿=== ws_psr_epr_1_psr_vintage.R stage: summary ===
+Rscript : Warning messages:
+At line:2 char:1
++ Rscript "data-raw\04-match-model\experiments\ws_psr_epr_1_psr_vintage ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Warning messages::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+1: package 'ggplot2' was built under R version 4.5.2 
+2: package 'tibble' was built under R version 4.5.2 
+3: package 'tidyr' was built under R version 4.5.2 
+4: package 'purrr' was built under R version 4.5.2 
+5: package 'dplyr' was built under R version 4.5.2 
+6: package 'stringr' was built under R version 4.5.2 
+7: package 'xgboost' was built under R version 4.5.3 
+8: package 'data.table' was built under R version 4.5.2 
+9: package 'glmnet' was built under R version 4.5.2 
+torp 1.3.5 - AFL Analytics and Player Rating System
+Data source: https://github.com/peteowen1/torpdata
+Report issues: https://github.com/peteowen1/torp/issues
+
+── WS1 Final Summary: PSR coefficient vintage refresh ──────────────────────────
+
+=== Fidelity check: PASS ===
+PSR cor=1.0000 OSR cor=1.0000 DSR cor=1.0000
+
+Top beta movers (2024-vintage -> 2025-vintage):
+               stat_name beta_v2024 beta_v2025     delta abs_delta
+              intercepts  6.7679529  2.5369837 -4.230969  4.230969
+  def_half_pressure_acts -4.5185287 -1.7046164  2.813912  2.813912
+      score_involvements  4.9531218  3.0420890 -1.911033  1.911033
+                 behinds  0.0000000  1.8585966  1.858597  1.858597
+ uncontested_possessions  2.2790149  0.5171519 -1.761863  1.761863
+           metres_gained  0.0000000  1.7562159  1.756216  1.756216
+          marks_inside50  0.1829006  1.8645478  1.681647  1.681647
+            goal_assists  0.0000000  1.5789745  1.578975  1.578975
+         kick_efficiency  0.5304126  2.0400073  1.509595  1.509595
+           shots_at_goal  4.3106645  2.9105662 -1.400098  1.400098
+
+G4 baseline, 2026 screen: MAE=25.132 slope=0.914
+G4 baseline, pooled: MAE=25.370 slope=0.956
+
+Walk-forward, 2026 screen: MAE=24.974 deltaMAE=-0.157 CI[-0.508,+0.204]
+Vintage_2025-everywhere, 2026 screen: MAE=25.353 deltaMAE=+0.221 CI[-0.218,+0.675]
+
+Walk-forward, POOLED: MAE=25.315 deltaMAE=-0.055 CI[-0.240,+0.124] SHIP_PASS=FALSE
+
+Section 6 falsifier 2 (staleness-is-the-issue check): vintage_2025-on-2026 did not improve vs vintage_2024-on-2026(walk-forward uses v2024 through 2025, but both candidates use v2025 FOR 2026, so this is the sharpest single-vintage read): staleness is NOT the issue this season -- do not recommend annual refresh on tidiness grounds alone
+✔ Saved ws1_final_summary.rds

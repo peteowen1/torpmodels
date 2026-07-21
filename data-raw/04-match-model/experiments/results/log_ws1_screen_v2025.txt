@@ -1,0 +1,103 @@
+﻿=== ws_psr_epr_1_psr_vintage.R stage: screen_v2025 ===
+Rscript : Warning messages:
+At line:2 char:1
++ Rscript "data-raw\04-match-model\experiments\ws_psr_epr_1_psr_vintage ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Warning messages::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+1: package 'ggplot2' was built under R version 4.5.2 
+2: package 'tibble' was built under R version 4.5.2 
+3: package 'tidyr' was built under R version 4.5.2 
+4: package 'purrr' was built under R version 4.5.2 
+5: package 'dplyr' was built under R version 4.5.2 
+6: package 'stringr' was built under R version 4.5.2 
+7: package 'xgboost' was built under R version 4.5.3 
+8: package 'data.table' was built under R version 4.5.2 
+9: package 'glmnet' was built under R version 4.5.2 
+torp 1.3.5 - AFL Analytics and Player Rating System
+Data source: https://github.com/peteowen1/torpdata
+Report issues: https://github.com/peteowen1/torp/issues
+
+── WS1 screen: vintage_2025-everywhere candidate -- 2026 (screen ONLY, G6 legali
+
+── Pre-optimising XGBoost nrounds (CV on pre-test-season data) ──
+
+nrounds CV input: 950 matches (seasons < 2026)
+XGBoost training on 1898 rows
+✔ XGBoost pipeline trained (33/63/13/85/54 rounds)
+XGBoost nrounds: total_xpoints=33, xscore_diff=63, conv_diff=13, score_diff=85,
+win=54
+
+── Rolling Evaluation: 20 rounds, ~162 matches (2026) ──────────────────────────
+ℹ 2026 R0: train=950, test=5
+✔ 2026 R1: train=955, test=9 [7.9s]
+
+ℹ 2026 R1: train=955, test=9
+✔ 2026 R2: train=964, test=7 [7.9s]
+
+ℹ 2026 R2: train=964, test=7
+✔ 2026 R3: train=971, test=7 [7.8s]
+
+ℹ 2026 R3: train=971, test=7
+✔ 2026 R4: train=978, test=8 [8.1s]
+
+ℹ 2026 R4: train=978, test=8
+✔ 2026 R5: train=986, test=9 [7.6s]
+
+ℹ 2026 R5: train=986, test=9
+✔ 2026 R6: train=995, test=9 [6.7s]
+
+ℹ 2026 R6: train=995, test=9
+✔ 2026 R7: train=1004, test=9 [6.6s]
+
+ℹ 2026 R7: train=1004, test=9
+✔ 2026 R8: train=1013, test=9 [6.5s]
+
+ℹ 2026 R8: train=1013, test=9
+✔ 2026 R9: train=1022, test=9 [6.8s]
+
+ℹ 2026 R9: train=1022, test=9
+✔ 2026 R10: train=1031, test=9 [7.2s]
+
+ℹ 2026 R10: train=1031, test=9
+✔ 2026 R11: train=1040, test=9 [6.9s]
+
+ℹ 2026 R11: train=1040, test=9
+✔ 2026 R12: train=1049, test=7 [6.6s]
+
+ℹ 2026 R12: train=1049, test=7
+✔ 2026 R13: train=1056, test=8 [7s]
+
+ℹ 2026 R13: train=1056, test=8
+✔ 2026 R14: train=1064, test=7 [7.7s]
+
+ℹ 2026 R14: train=1064, test=7
+✔ 2026 R15: train=1071, test=7 [7.5s]
+
+ℹ 2026 R15: train=1071, test=7
+✔ 2026 R16: train=1078, test=7 [7.9s]
+
+ℹ 2026 R16: train=1078, test=7
+✔ 2026 R17: train=1085, test=9 [6.8s]
+
+ℹ 2026 R17: train=1085, test=9
+✔ 2026 R18: train=1094, test=9 [6.7s]
+
+ℹ 2026 R18: train=1094, test=9
+✔ 2026 R19: train=1103, test=9 [6.4s]
+
+ℹ 2026 R19: train=1103, test=9
+✔ Rolling evaluation complete
+ℹ 2026 R19: train=1103, test=9
+✔ 2026 R19: train=1103, test=9 [7.1s]
+
+Vintage_2025-everywhere 2026 screen completed in 2.47 min
+G4 baseline + V1a recal, 2026 screen             MAE=25.132 RMSE=31.651 Brier=0.1758 Bits=0.2412 Slope=0.914 Cor=0.596 SDRatio=0.652 CloseMAE(n=49)=16.461
+Vintage_2025-everywhere, no recal, 2026 screen   MAE=25.451 RMSE=31.937 Brier=0.1757 Bits=0.2416 Slope=0.843 Cor=0.593 SDRatio=0.704 CloseMAE(n=49)=18.137
+Vintage_2025-everywhere + V1a recal, 2026 screen MAE=25.353 RMSE=31.841 Brier=0.1757 Bits=0.2416 Slope=0.906 Cor=0.590 SDRatio=0.651 CloseMAE(n=49)=16.505
+
+boot_mae_diff(Vintage_2025-everywhere+recal - G4 baseline+recal, 2026 screen): N=162 deltaMAE=+0.221 95%CI[-0.218,+0.675] deltaBrier=-0.00010
+Section 6 falsifier 2 check (screen improvement over baseline): NO IMPROVEMENT (25.353 vs 25.132)
+✔ Saved ws1_v2025_screen.rds
+There were 20 warnings (use warnings() to see them)

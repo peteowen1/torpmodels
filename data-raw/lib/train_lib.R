@@ -351,7 +351,8 @@ cv_wp_oos_preds <- function(X, y, folds, params, nrounds) {
 #' @param ep_model A fitted EP `xgb.Booster`.
 #' @param wp_model A fitted WP `xgb.Booster`.
 #' @return `list(preds, labels, meta_cols)` -- `meta_cols` carries `period`,
-#'   `points_diff`, `est_match_elapsed`, `match_id` for the gate cell.
+#'   `points_diff`, `est_match_elapsed`, `est_match_remaining`, `match_id`
+#'   for the gate cell (`est_match_remaining` feeds [wp_leverage_weight()]).
 #' @keywords internal
 score_wp_rows <- function(epv_rows, ep_model, wp_model) {
   epv_vars <- epv_rows |> torp:::select_epv_model_vars()
@@ -372,7 +373,8 @@ score_wp_rows <- function(epv_rows, ep_model, wp_model) {
     preds = preds,
     labels = wp_data$label_wp,
     meta_cols = wp_data |> dplyr::select("period", "points_diff",
-                                         "est_match_elapsed", "match_id")
+                                         "est_match_elapsed", "est_match_remaining",
+                                         "match_id")
   )
 }
 
@@ -419,8 +421,13 @@ fit_wp_temporal_variant <- function(model_data_epv, gate_season,
   row_folds <- make_match_folds(train_data$torp_match_id)
   ep_oos <- cv_ep_oos_preds(ep_fit$X, ep_fit$y, ep_fit$folds, row_folds, params_ep, ep_fit$optimal_nrounds)
 
-  # 3. WP features built from the OOS EP preds, WP trained on the window
+  # 3. WP features built from the OOS EP preds, WP trained on the window.
+  #    S5_exclude_draws: mirrors the production WP branch's draw-drop
+  #    (training only) so the temporal variant honestly reflects what
+  #    production training does -- gate_data/score_wp_rows() below keeps
+  #    draws for eval, unchanged.
   model_data_wp_train <- build_wp_data(train_data, ep_oos)
+  model_data_wp_train <- model_data_wp_train[model_data_wp_train$label_wp %in% c(0, 1), ]
   wp_fit <- fit_wp(model_data_wp_train, params = params_wp)
 
   # 4. Predict gate-season rows -- EP features come from the temporal EP
@@ -428,39 +435,81 @@ fit_wp_temporal_variant <- function(model_data_epv, gate_season,
   score_wp_rows(gate_data, ep_fit$model, wp_fit$model)
 }
 
-#' Fit the Platt-on-logit calibration (D1): global or Q4/close-interaction form
+#' Path B continuous leverage weight (FABLE-RECAL-PLAN.md \enc{§}{Section}7)
 #'
-#' Global (2 params, always the FIRST attempt):
-#' `p' = plogis(a + b * qlogis(p))`. Q4/close interaction (D1's
-#' pre-authorized escalation, 4 params -- used only when the
-#' globally-calibrated Q4/close slope still breaches the gate):
+#' Pre-registered, NOT a fitting parameter: `w = pmax(0, 1 -
+#' minutes_remaining/ramp_mins) * pmax(0, 1 - abs(points_diff)/margin_cap)`,
+#' `ramp_mins = 20`, `margin_cap = 18` fixed by design. Continuous in both
+#' match-time and margin -- no step at the Q3->Q4 boundary or a hard margin
+#' threshold the way [wp_cell_flag()]'s binary Q4/close cell has (margin
+#' still steps at real scoring events, which is genuine signal, not an
+#' artifact); rationale is WPA consumes DIFFERENCES of consecutive
+#' predictions, so a discontinuous calibration would spike/zero it right at
+#' the boundary. `w` is ~1 deep in the Q4/close cell and 0 through the bulk
+#' of the first three quarters.
+#'
+#' `minutes_remaining` maps to `est_match_remaining / 60` --
+#' `WP_MODEL_FEATURES`' own match-time-remaining column
+#' (`torp/R/clean_pbp.R`: `est_match_remaining = AFL_PLAY_GAME_SECONDS -
+#' est_match_elapsed`, in seconds; `AFL_PLAY_GAME_SECONDS = 4800` = 4 x
+#' `AFL_PLAY_QUARTER_SECONDS` (1200), so `ramp_mins = 20` is exactly one
+#' quarter of playing time) -- the identical variable the WP model itself
+#' trains on, not a new feature.
+#'
+#' @param minutes_remaining Numeric vector, match time remaining in minutes
+#'   (`est_match_remaining / 60`).
+#' @param points_diff Numeric vector, signed scoring margin.
+#' @param ramp_mins Numeric, default `20` (fixed, not fitted).
+#' @param margin_cap Numeric, default `18` (fixed, not fitted).
+#' @return Numeric vector in `[0, 1]`, same length as the inputs.
+#' @keywords internal
+wp_leverage_weight <- function(minutes_remaining, points_diff, ramp_mins = 20, margin_cap = 18) {
+  pmax(0, 1 - minutes_remaining / ramp_mins) * pmax(0, 1 - abs(points_diff) / margin_cap)
+}
+
+#' Fit the Platt-on-logit calibration: global, Q4/close-interaction, or
+#' Path B leverage-interaction form
+#'
+#' Global (2 params): `p' = plogis(a + b * qlogis(p))`. Q4/close interaction
+#' (D1's original pre-authorized escalation, 4 params, kept for backward
+#' compatibility/debugging -- retired as of FABLE-RECAL-PLAN.md \enc{§}{Section}7 Path B, no
+#' longer fitted by [train_core_models()]):
 #' `glm(label ~ qlogis(pred) * is_q4close, binomial)`, i.e.
 #' `p' = plogis((a + a_q4c*I) + (b + b_q4c*I) * qlogis(p))` with
-#' `I = is_q4close`. Per D1: do NOT go further (no splines, no per-quarter
-#' models -- that is retraining by another name).
+#' `I = is_q4close`. Leverage interaction (\enc{§}{Section}7 Path B, the form
+#' [train_core_models()] actually fits and ships -- a single global slope
+#' was measured unable to satisfy both gate cells simultaneously, see \enc{§}{Section}7's
+#' evidence): `glm(label ~ qlogis(pred) + I(w*qlogis(pred)), binomial)`, i.e.
+#' `p' = plogis(a + (b + c*w) * qlogis(p))` with `w` from
+#' [wp_leverage_weight()]. Per \enc{§}{Section}7: do NOT go further (no splines, no
+#' per-quarter models -- that is retraining by another name), and do not
+#' tune `ramp_mins`/`margin_cap` against the gate.
 #'
 #' Draw rows (`label == 0.5`) are dropped before fitting, matching
 #' FABLE-WP-EXPERIMENTS.md's convention ("kept for logloss, excluded from
-#' calibration slopes"). Both forms return the same shape so the shipped
-#' artifact schema is uniform: the global form carries `a_q4c = 0,
-#' b_q4c = 0`.
+#' calibration slopes"). All forms return the same shape so the shipped
+#' artifact schema is uniform: unused fields are 0.
 #'
 #' @param preds Numeric vector of raw (uncalibrated) WP predictions.
 #' @param labels Numeric vector, same length, values in `{0, 0.5, 1}`.
 #' @param is_q4close Logical vector, same length as `labels`: the plan's
 #'   exact cell (`period == 4 & abs(points_diff) <= 12`, see
-#'   [wp_cell_flag()]). Required by (and only used by) the interaction
-#'   form; `NA` is treated as out-of-cell.
-#' @param form `"global"` (default) or `"q4close_interaction"`.
-#' @return `list(a, b, a_q4c, b_q4c, form)`.
+#'   [wp_cell_flag()]). Required by (and only used by) the
+#'   `"q4close_interaction"` form; `NA` is treated as out-of-cell.
+#' @param w Numeric vector, same length as `labels`: [wp_leverage_weight()].
+#'   Required by (and only used by) the `"leverage_interaction_v1"` form.
+#' @param form `"global"` (default), `"q4close_interaction"`, or
+#'   `"leverage_interaction_v1"`.
+#' @return `list(a, b, c, a_q4c, b_q4c, form)`.
 #' @keywords internal
-fit_wp_calibration <- function(preds, labels, is_q4close = NULL,
-                               form = c("global", "q4close_interaction")) {
+fit_wp_calibration <- function(preds, labels, is_q4close = NULL, w = NULL,
+                               form = c("global", "q4close_interaction", "leverage_interaction_v1")) {
   form <- match.arg(form)
   keep <- labels %in% c(0, 1)
   y <- labels[keep]
   p <- pmin(pmax(preds[keep], 1e-6), 1 - 1e-6)
   x <- stats::qlogis(p)
+  c_coef <- 0
 
   if (form == "global") {
     fit <- stats::glm(y ~ x, family = stats::binomial())
@@ -470,7 +519,7 @@ fit_wp_calibration <- function(preds, labels, is_q4close = NULL,
     a_q4c <- 0
     b_q4c <- 0
     stopifnot(is.finite(a), is.finite(b), b > 0)
-  } else {
+  } else if (form == "q4close_interaction") {
     if (is.null(is_q4close)) {
       cli::cli_abort("fit_wp_calibration(form = 'q4close_interaction') requires {.arg is_q4close}")
     }
@@ -488,9 +537,28 @@ fit_wp_calibration <- function(preds, labels, is_q4close = NULL,
     # consecutive predictions, so monotonicity is a hard requirement (D1).
     stopifnot(is.finite(a), is.finite(b), is.finite(a_q4c), is.finite(b_q4c),
               b > 0, b + b_q4c > 0)
+  } else {
+    if (is.null(w)) {
+      cli::cli_abort("fit_wp_calibration(form = 'leverage_interaction_v1') requires {.arg w}")
+    }
+    stopifnot(length(w) == length(labels))
+    w_k <- w[keep]
+    fit <- stats::glm(y ~ x + I(w_k * x), family = stats::binomial())
+    co <- stats::coef(fit)
+    a <- unname(co[["(Intercept)"]])
+    b <- unname(co[["x"]])
+    c_coef <- unname(co[["I(w_k * x)"]])
+    a_q4c <- 0
+    b_q4c <- 0
+    # b > 0 keeps the w = 0 map strictly monotone; b + c > 0 keeps the w = 1
+    # map strictly monotone -- w is linear in [0, 1], so these two endpoints
+    # bound the slope (b + c*w) over its whole range. Same WPA-monotonicity
+    # rationale as the interaction form above.
+    stopifnot(is.finite(a), is.finite(b), is.finite(c_coef),
+              b > 0, b + c_coef > 0)
   }
 
-  list(a = a, b = b, a_q4c = a_q4c, b_q4c = b_q4c, form = form)
+  list(a = a, b = b, c = c_coef, a_q4c = a_q4c, b_q4c = b_q4c, form = form)
 }
 
 #' The plan's exact gate cell, as a per-row flag
@@ -512,20 +580,36 @@ wp_cell_flag <- function(meta_cols, period = 4, margin_abs_max = 12) {
 
 #' Apply a fitted WP calibration to raw predictions
 #'
-#' The single formula that trainer-side evaluation implements here and
-#' torp's `get_wp_preds()` implements independently at serve time:
-#' `plogis((a + a_q4c*I) + (b + b_q4c*I) * qlogis(p))`, `I = is_q4close`.
-#' Tolerant of missing/non-finite `a_q4c`/`b_q4c` (treated as 0), so a
-#' global-form or pre-escalation 2-param artifact stays valid. `NA`s in
-#' `is_q4close` are out-of-cell.
+#' Dispatches on `calib$form`. `"leverage_interaction_v1"` (\enc{§}{Section}7 Path B):
+#' `plogis(a + (b + c*w) * qlogis(p))`, `w` from [wp_leverage_weight()] --
+#' the single formula this trainer-side evaluation implements here and
+#' torp's `get_wp_preds()` implements independently at serve time. Every
+#' other form (`"global"`, `"q4close_interaction"`, or missing/unrecognized
+#' -- both retired D1 forms stay supported here for backward
+#' compatibility/debugging): `plogis((a + a_q4c*I) + (b + b_q4c*I) *
+#' qlogis(p))`, `I = is_q4close`. Tolerant of missing/non-finite
+#' `a_q4c`/`b_q4c`/`c` (treated as 0), so a global-form or pre-escalation
+#' 2-param artifact stays valid. `NA`s in `is_q4close` are out-of-cell.
 #'
 #' @param preds Numeric vector of raw WP predictions.
 #' @param calib Calibration list with at least `a` and `b`.
 #' @param is_q4close Logical vector, or `NULL` for all-out-of-cell (pure
-#'   global application).
+#'   global application). Used by the `"global"`/`"q4close_interaction"`
+#'   forms only.
+#' @param w Numeric vector, [wp_leverage_weight()] per row. Required when
+#'   `calib$form == "leverage_interaction_v1"`.
 #' @return Numeric vector of calibrated predictions.
 #' @keywords internal
-apply_wp_calibration <- function(preds, calib, is_q4close = NULL) {
+apply_wp_calibration <- function(preds, calib, is_q4close = NULL, w = NULL) {
+  if (identical(calib$form, "leverage_interaction_v1")) {
+    if (is.null(w)) {
+      cli::cli_abort("apply_wp_calibration(calib$form = 'leverage_interaction_v1') requires {.arg w}")
+    }
+    c_coef <- calib$c
+    if (is.null(c_coef) || length(c_coef) != 1 || !is.finite(c_coef)) c_coef <- 0
+    return(stats::plogis(calib$a + (calib$b + c_coef * w) * stats::qlogis(preds)))
+  }
+
   a_q4c <- calib$a_q4c
   if (is.null(a_q4c) || length(a_q4c) != 1 || !is.finite(a_q4c)) a_q4c <- 0
   b_q4c <- calib$b_q4c
@@ -883,6 +967,23 @@ train_core_models <- function(models = c("ep", "wp", "shot"),
       ep_source_label <- "insample"
     }
 
+    # S5_exclude_draws (FABLE-RECAL-PLAN.md \enc{§}{Section}7 addendum, WP-SHARPNESS-RESULTS.md \enc{§}{Section}7 --
+    # the one strictly-non-negative S1-S5 finding): drop draw rows
+    # (label_wp == 0.5) from WP TRAINING only. Reassigning model_data_wp
+    # here (rather than filtering only the frame passed to fit_wp()) keeps
+    # every downstream use in this branch (folds_wp, meta_full, wp_fit's
+    # own X/y/folds) consistently row-aligned -- gate/eval data and the
+    # calibration fit's own draw-exclusion (fit_wp_calibration() already
+    # drops label == 0.5) are untouched.
+    if ("label_wp" %in% names(model_data_wp)) {
+      n_before_drop <- nrow(model_data_wp)
+      model_data_wp <- model_data_wp[model_data_wp$label_wp %in% c(0, 1), ]
+      n_dropped <- n_before_drop - nrow(model_data_wp)
+      if (n_dropped > 0) {
+        cli::cli_inform("S5_exclude_draws: dropped {n_dropped} draw row{?s} (label_wp == 0.5) from WP training data")
+      }
+    }
+
     wp_fit <- fit_wp(model_data_wp)
 
     if (!skip_calibration) {
@@ -915,47 +1016,54 @@ train_core_models <- function(models = c("ep", "wp", "shot"),
       slope_q4close_before <- wp_gate_slope(temporal$preds[gate_idx], temporal$labels[gate_idx], gate_meta, "q4close")
       cli::cli_inform("Uncalibrated temporal slopes (gate half): all = {round(slope_all_before, 3)}, q4close = {round(slope_q4close_before, 3)}")
 
-      # Stage 1: the 2-param global fit is ALWAYS the first attempt (D1),
-      # fitted on the fit half only.
+      # ---- Path B (FABLE-RECAL-PLAN.md \enc{§}{Section}7, 2026-07-21): state-dependent
+      # calibration form -- REPLACES D1's global fit (and its conditional
+      # 4-param q4close_interaction escalation) as the form that is actually
+      # fitted and shipped. The 2026-07-21 gated retrain proved a single
+      # global slope cannot pass the gate on this data (b = 1.4198
+      # overcorrected all-rows to 0.715 while q4close stayed 1.245 -- both
+      # breaches); S1-S5 raw-model sharpening came back null
+      # (WP-SHARPNESS-RESULTS.md). The leverage-weighted interaction fits a
+      # continuous per-row correction instead of one global slope.
       is_q4c_fit <- wp_cell_flag(fit_meta)
       is_q4c_gate <- wp_cell_flag(gate_meta)
-      calib_global <- fit_wp_calibration(temporal$preds[fit_idx], temporal$labels[fit_idx])
-      cli::cli_inform("Fitted global calibration (fit half): a = {round(calib_global$a, 4)}, b = {round(calib_global$b, 4)}")
+      w_fit <- wp_leverage_weight(fit_meta$est_match_remaining / 60, fit_meta$points_diff)
+      w_gate <- wp_leverage_weight(gate_meta$est_match_remaining / 60, gate_meta$points_diff)
 
-      # Global-form slopes on BOTH halves: the fit half drives the
-      # escalation decision (so the gate half never influences form
-      # selection); the gate-half numbers are recorded as the honest
-      # would-have-shipped stage-1 measurement.
+      # Report-only counterfactual: what the retired D1 global 2-param fit
+      # would have shipped, kept purely for log continuity/monitoring --
+      # never applied, never gated. Shows exactly the defect Path B exists
+      # to fix.
+      calib_global <- fit_wp_calibration(temporal$preds[fit_idx], temporal$labels[fit_idx])
       cal_fit_global <- apply_wp_calibration(temporal$preds[fit_idx], calib_global, is_q4c_fit)
       slope_q4close_fithalf_global <- wp_gate_slope(cal_fit_global, temporal$labels[fit_idx], fit_meta, "q4close")
       cal_gate_global <- apply_wp_calibration(temporal$preds[gate_idx], calib_global, is_q4c_gate)
       slope_all_global <- wp_gate_slope(cal_gate_global, temporal$labels[gate_idx], gate_meta, "all")
       slope_q4close_global <- wp_gate_slope(cal_gate_global, temporal$labels[gate_idx], gate_meta, "q4close")
       cli::cli_inform(
-        "Global-form calibrated slopes: fit-half q4close = {round(slope_q4close_fithalf_global, 3)} (escalation check) | gate-half all = {round(slope_all_global, 3)}, q4close = {round(slope_q4close_global, 3)}"
+        "[report-only, retired D1 form] Global-form calibrated slopes: fit-half q4close = {round(slope_q4close_fithalf_global, 3)} (escalation check) | gate-half all = {round(slope_all_global, 3)}, q4close = {round(slope_q4close_global, 3)}"
       )
 
-      # Stage 2 (D1's pre-authorized escalation): only when the
-      # globally-calibrated Q4/close slope still breaches 0.10 -- measured
-      # on the FIT half, so form selection never touches the gate half.
-      # Escalation is a property of the measured breach, not of slope_gate:
-      # an unfenced (--skip-slope-gate) run still ships the better form.
-      escalated <- !is.na(slope_q4close_fithalf_global) && abs(slope_q4close_fithalf_global - 1) > 0.10
-      calib <- calib_global
-      if (escalated) {
-        cli::cli_alert_warning(
-          "Global calibration leaves fit-half q4close slope at {round(slope_q4close_fithalf_global, 3)} (|slope - 1| > 0.10) -- escalating to the D1 q4close-interaction form (4 params, fit half only)"
-        )
-        calib <- fit_wp_calibration(temporal$preds[fit_idx], temporal$labels[fit_idx],
-                                    is_q4close = is_q4c_fit, form = "q4close_interaction")
-        cli::cli_inform(
-          "Fitted interaction calibration (fit half): a = {round(calib$a, 4)}, b = {round(calib$b, 4)}, a_q4c = {round(calib$a_q4c, 4)}, b_q4c = {round(calib$b_q4c, 4)}"
-        )
-      }
+      # Path B: the leverage-interaction form, fitted directly on the fit
+      # half -- this IS the shipped form, no further conditional escalation
+      # (S6, a specialist Q4/close submodel, is the next escalation if Path
+      # B itself fails the gate below -- that is a Pete decision, not
+      # automated here). Per \enc{§}{Section}7: do not tune ramp_mins/margin_cap against
+      # the gate.
+      calib <- fit_wp_calibration(temporal$preds[fit_idx], temporal$labels[fit_idx],
+                                  w = w_fit, form = "leverage_interaction_v1")
+      cli::cli_inform(
+        "Fitted leverage-interaction calibration (fit half): a = {round(calib$a, 4)}, b = {round(calib$b, 4)}, c = {round(calib$c, 4)}"
+      )
+      cal_fit_leverage <- apply_wp_calibration(temporal$preds[fit_idx], calib, w = w_fit)
+      slope_q4close_fithalf_leverage <- wp_gate_slope(cal_fit_leverage, temporal$labels[fit_idx], fit_meta, "q4close")
+      cli::cli_inform(
+        "Leverage-interaction calibrated slopes: fit-half q4close = {round(slope_q4close_fithalf_leverage, 3)} (escalation check)"
+      )
 
       # Final calibrated predictions on the gate half -- the only rows the
       # gate ever sees. Genuine out-of-sample for the calibration fit.
-      calibrated_gate <- apply_wp_calibration(temporal$preds[gate_idx], calib, is_q4c_gate)
+      calibrated_gate <- apply_wp_calibration(temporal$preds[gate_idx], calib, w = w_gate)
 
       if (isTRUE(slope_gate)) {
         gated <- validate_wp_temporal_slope(calibrated_gate, temporal$labels[gate_idx], gate_meta, threshold = 0.10)
@@ -970,23 +1078,29 @@ train_core_models <- function(models = c("ep", "wp", "shot"),
         )
       }
 
-      # Cell-boundary discontinuity -- report-only design guard, never gated.
-      bj <- wp_calibration_boundary_jump(calib)
+      # Cell-boundary discontinuity -- N/A for the leverage form by
+      # construction: w is continuous in both match-time and margin (no
+      # hard step the way q4close_interaction's binary I() has), so
+      # calibrated WP has no boundary jump to measure. Report-only, never
+      # gated -- kept at 0/NA rather than calling wp_calibration_boundary_jump()
+      # (which assumes the binary is_q4close arm and would error without a
+      # w argument).
+      bj <- list(max_jump = 0, max_at_p = NA_real_, jump_at_p50 = 0)
       cli::cli_inform(
-        "[report-only, not gated] Cell-boundary discontinuity: max = {round(bj$max_jump * 100, 2)} WP pts (at raw p = {bj$max_at_p}), at p = 0.5: {round(bj$jump_at_p50 * 100, 2)} WP pts"
+        "[report-only, not gated] Cell-boundary discontinuity: N/A for leverage_interaction_v1 (continuous weight, no boundary by construction)"
       )
 
       # Gate-cell sample-size + reliability diagnostics, BOTH halves --
       # lets the log answer "stable estimate or thin-cell noise?" (the cell
       # is ~1 season and halved, so n visibility is essential).
-      cal_fit_final <- apply_wp_calibration(temporal$preds[fit_idx], calib, is_q4c_fit)
-      wp_gate_cell_diagnostics(cal_fit_final, temporal$labels[fit_idx], fit_meta, label = "fit half")
+      wp_gate_cell_diagnostics(cal_fit_leverage, temporal$labels[fit_idx], fit_meta, label = "fit half")
       wp_gate_cell_diagnostics(calibrated_gate, temporal$labels[gate_idx], gate_meta, label = "gate half")
 
-      calib_formula <- "plogis((a + a_q4c*I) + (b + b_q4c*I)*qlogis(p)), I = is_q4close"
+      calib_formula <- "plogis(a + (b + c*w)*qlogis(p)), w = leverage_weight(minutes_remaining, points_diff; ramp_mins, margin_cap)"
       wp_calibration_obj <- list(
-        a = calib$a, b = calib$b, a_q4c = calib$a_q4c, b_q4c = calib$b_q4c,
+        a = calib$a, b = calib$b, c = calib$c,
         form = calib$form,
+        ramp_mins = 20, margin_cap = 18,
         cell = list(period = 4, margin_abs_max = 12),
         formula = calib_formula,
         fitted_on = "temporal-oos-fit-half", gate_season = gate_season,
@@ -1000,12 +1114,12 @@ train_core_models <- function(models = c("ep", "wp", "shot"),
       )
       wp_calibration_meta <- torpmodels:::build_model_meta(
         "wp_calibration", seasons, list(formula = calib_formula, form = calib$form),
-        c("a", "b", "a_q4c", "b_q4c"),
+        c("a", "b", "c"),
         n_rows = length(fit_idx),
         extra = list(
           script = "train_models.R",
-          a = calib$a, b = calib$b, a_q4c = calib$a_q4c, b_q4c = calib$b_q4c,
-          form = calib$form,
+          a = calib$a, b = calib$b, c = calib$c,
+          form = calib$form, ramp_mins = 20, margin_cap = 18,
           gate_season = gate_season, n_fit = length(fit_idx),
           n_fit_half_matches = n_fit_half_matches,
           n_gate_half_matches = n_gate_half_matches,
@@ -1013,6 +1127,7 @@ train_core_models <- function(models = c("ep", "wp", "shot"),
           slope_q4close_before = slope_q4close_before, slope_q4close_after = slope_q4close_after,
           slope_all_global = slope_all_global, slope_q4close_global = slope_q4close_global,
           slope_q4close_fithalf_global = slope_q4close_fithalf_global,
+          slope_q4close_fithalf_leverage = slope_q4close_fithalf_leverage,
           max_boundary_jump = bj$max_jump
         )
       )
@@ -1025,8 +1140,10 @@ train_core_models <- function(models = c("ep", "wp", "shot"),
       folds_wp <- lapply(seq_len(max(row_folds_wp)), function(k) which(row_folds_wp == k))
       cv_oos <- cv_wp_oos_preds(wp_fit$X, wp_fit$y, folds_wp, wp_params(), wp_fit$optimal_nrounds)
       meta_full <- model_data_wp |> dplyr::select("period", "points_diff",
-                                                   "est_match_elapsed", "match_id")
-      cv_oos_calibrated <- apply_wp_calibration(cv_oos, calib, wp_cell_flag(meta_full))
+                                                   "est_match_elapsed", "est_match_remaining",
+                                                   "match_id")
+      w_full <- wp_leverage_weight(meta_full$est_match_remaining / 60, meta_full$points_diff)
+      cv_oos_calibrated <- apply_wp_calibration(cv_oos, calib, w = w_full)
       cli::cli_inform(
         "[report-only, not gated] Random-CV calibrated slope: all = {round(wp_gate_slope(cv_oos_calibrated, model_data_wp$label_wp, meta_full, 'all'), 3)}, q4close = {round(wp_gate_slope(cv_oos_calibrated, model_data_wp$label_wp, meta_full, 'q4close'), 3)}"
       )
@@ -1046,7 +1163,8 @@ train_core_models <- function(models = c("ep", "wp", "shot"),
         tryCatch({
           ip_epv <- torp::clean_pbp(ip_chains) |> torp:::clean_model_data_epv()
           ip_scored <- score_wp_rows(ip_epv, ep_fit$model, wp_fit$model)
-          ip_preds_cal <- apply_wp_calibration(ip_scored$preds, calib, wp_cell_flag(ip_scored$meta_cols))
+          w_ip <- wp_leverage_weight(ip_scored$meta_cols$est_match_remaining / 60, ip_scored$meta_cols$points_diff)
+          ip_preds_cal <- apply_wp_calibration(ip_scored$preds, calib, w = w_ip)
           cli::cli_inform(
             "[report-only, not gated] In-progress season {in_progress_season}: calibrated slope all = {round(wp_gate_slope(ip_preds_cal, ip_scored$labels, ip_scored$meta_cols, 'all'), 3)}, q4close = {round(wp_gate_slope(ip_preds_cal, ip_scored$labels, ip_scored$meta_cols, 'q4close'), 3)} (n = {length(ip_scored$labels)})"
           )

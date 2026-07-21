@@ -1,0 +1,38 @@
+
+── WP sharpness batch: prep base EP+WP data (S1-S5) ────────────────────────────
+Started: 2026-07-21 21:17:59.315748
+default_training_seasons(): 2021-2025 | gate_season fixed at 2025 per the plan
+Loading chains for seasons 2021-2025...
+Chains: 2147362 rows
+Loaded model_data_epv: 1749117 rows, 1061 matches
+train_data: 1397409 rows, seasons 2021-2024 | gate_data: 351708 rows, season
+2025
+
+── Fitting EP (train seasons only) -- this is the expensive, ONE-TIME step ──
+
+Running EP 5-fold CV (match-grouped)...
+Multiple eval metrics are present. Will use test_mlogloss for early stopping.
+Will train until test_mlogloss hasn't improved in 20 rounds.
+
+[1]	train-mlogloss:1.485338±0.002124	test-mlogloss:1.485855±0.007667 
+[21]	train-mlogloss:1.366774±0.002049	test-mlogloss:1.372003±0.006782 
+[41]	train-mlogloss:1.346682±0.002144	test-mlogloss:1.356089±0.007514 
+[61]	train-mlogloss:1.339206±0.002216	test-mlogloss:1.352225±0.008076 
+[81]	train-mlogloss:1.335055±0.002228	test-mlogloss:1.351239±0.008335 
+[101]	train-mlogloss:1.331987±0.002182	test-mlogloss:1.351162±0.008461 
+Stopping. Best iteration:
+[120]	train-mlogloss:1.329534±0.002123	test-mlogloss:1.351365±0.008506
+
+[120]	train-mlogloss:1.329534±0.002123	test-mlogloss:1.351365±0.008506 
+EP optimal nrounds: 100 | CV mlogloss: 1.351155
+EP fit done in 4.9 min
+EP OOS fold 1/5...
+EP OOS fold 2/5...
+EP OOS fold 3/5...
+EP OOS fold 4/5...
+EP OOS fold 5/5...
+EP 5-fold OOS preds done in 3.1 min
+model_data_wp_train_base: 1397409 rows
+gate_wp_data_base: 351708 rows
+Empirical pace constant (WP rows / match-minute, training data): 20.672
+✔ prep_base_data.R complete: 2026-07-21 21:30:26.663528
