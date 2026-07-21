@@ -1,0 +1,362 @@
+
+── WP sharpness batch: S1-S5 variants ──────────────────────────────────────────
+Started: 2026-07-21 21:57:57.172621
+Base frames loaded: train 1397409 rows, gate 351708 rows
+
+── Variant: baseline ──
+
+[baseline] Running WP 5-fold CV (match-grouped), n = 1397409, 18 features...
+Multiple eval metrics are present. Will use test_logloss for early stopping.
+Will train until test_logloss hasn't improved in 20 rounds.
+
+[1]	train-logloss:0.683644±0.000304	test-logloss:0.683768±0.000867 
+[51]	train-logloss:0.500729±0.006484	test-logloss:0.504688±0.020932 
+[101]	train-logloss:0.469569±0.007763	test-logloss:0.475657±0.028058 
+[151]	train-logloss:0.462659±0.008097	test-logloss:0.470024±0.031120 
+[201]	train-logloss:0.460741±0.008231	test-logloss:0.468708±0.032402 
+[251]	train-logloss:0.460092±0.008275	test-logloss:0.468442±0.033078 
+[301]	train-logloss:0.459766±0.008278	test-logloss:0.468436±0.033461 
+Stopping. Best iteration:
+[308]	train-logloss:0.459714±0.008270	test-logloss:0.468446±0.033510
+
+[308]	train-logloss:0.459714±0.008270	test-logloss:0.468446±0.033510 
+[baseline] WP optimal nrounds: 288 | CV logloss: 0.468418
+✔ [baseline] done in 2.7 min
+✔ [baseline] slope_all=1.19 slope_q4close=1.554 (n=288) logloss=0.4297 brier=0.14207
+     group  variant slope_all slope_q4close se_q4close n_q4close  logloss
+1 baseline baseline    1.1897        1.5542     0.1721       288 0.429697
+     brier n_train optimal_nrounds cv_logloss elapsed_min
+1 0.142068 1397409             288   0.468418        2.66
+                   monotone_constraints notes
+1 (0,0,0,0,1,1,1,0,1,1,0,0,0,0,0,0,0,0)      
+[baseline] monotonicity violation rate (Q4/close, points_diff perturbation): 0
+(3000 pairs, 300 rows)
+
+── Variant: S1_leverage_binary_k1 ──
+
+[S1_leverage_binary_k1] Running WP 5-fold CV (match-grouped), n = 1397409, 18
+features...
+Multiple eval metrics are present. Will use test_logloss for early stopping.
+Will train until test_logloss hasn't improved in 20 rounds.
+
+[1]	train-logloss:0.683838±0.000309	test-logloss:0.683956±0.000897 
+[51]	train-logloss:0.505619±0.006403	test-logloss:0.509566±0.020993 
+[101]	train-logloss:0.475355±0.007737	test-logloss:0.481459±0.028016 
+[151]	train-logloss:0.468626±0.008098	test-logloss:0.476117±0.031064 
+[201]	train-logloss:0.466726±0.008235	test-logloss:0.474857±0.032341 
+[251]	train-logloss:0.466041±0.008285	test-logloss:0.474600±0.033042 
+Stopping. Best iteration:
+[300]	train-logloss:0.465644±0.008284	test-logloss:0.474595±0.033469
+
+[300]	train-logloss:0.465644±0.008284	test-logloss:0.474595±0.033469 
+[S1_leverage_binary_k1] WP optimal nrounds: 280 | CV logloss: 0.474582
+✔ [S1_leverage_binary_k1] done in 2.7 min
+✔ [S1_leverage_binary_k1] slope_all=1.194 slope_q4close=1.555 (n=288) logloss=0.42959 brier=0.142
+
+── Variant: S1_leverage_binary_k3 ──
+
+[S1_leverage_binary_k3] Running WP 5-fold CV (match-grouped), n = 1397409, 18
+features...
+Multiple eval metrics are present. Will use test_logloss for early stopping.
+Will train until test_logloss hasn't improved in 20 rounds.
+
+[1]	train-logloss:0.684152±0.000324	test-logloss:0.684272±0.000895 
+[51]	train-logloss:0.513187±0.006525	test-logloss:0.517400±0.021062 
+[101]	train-logloss:0.484407±0.007885	test-logloss:0.491110±0.028121 
+[151]	train-logloss:0.477958±0.008272	test-logloss:0.486253±0.031125 
+[201]	train-logloss:0.476089±0.008377	test-logloss:0.485186±0.032402 
+[251]	train-logloss:0.475316±0.008395	test-logloss:0.484973±0.033107 
+Stopping. Best iteration:
+[265]	train-logloss:0.475184±0.008400	test-logloss:0.484978±0.033240
+
+[265]	train-logloss:0.475184±0.008400	test-logloss:0.484978±0.033240 
+[S1_leverage_binary_k3] WP optimal nrounds: 245 | CV logloss: 0.484963
+✔ [S1_leverage_binary_k3] done in 2.6 min
+✔ [S1_leverage_binary_k3] slope_all=1.209 slope_q4close=1.562 (n=288) logloss=0.42972 brier=0.14198
+
+── Variant: S1_leverage_binary_k7 ──
+
+[S1_leverage_binary_k7] Running WP 5-fold CV (match-grouped), n = 1397409, 18
+features...
+Multiple eval metrics are present. Will use test_logloss for early stopping.
+Will train until test_logloss hasn't improved in 20 rounds.
+
+[1]	train-logloss:0.684594±0.000367	test-logloss:0.684736±0.000960 
+[51]	train-logloss:0.523599±0.006839	test-logloss:0.528763±0.021373 
+[101]	train-logloss:0.496792±0.008197	test-logloss:0.505135±0.028608 
+[151]	train-logloss:0.490692±0.008583	test-logloss:0.500959±0.031548 
+[201]	train-logloss:0.488773±0.008725	test-logloss:0.500094±0.032814 
+Stopping. Best iteration:
+[249]	train-logloss:0.487891±0.008790	test-logloss:0.500021±0.033534
+
+[249]	train-logloss:0.487891±0.008790	test-logloss:0.500021±0.033534 
+[S1_leverage_binary_k7] WP optimal nrounds: 229 | CV logloss: 0.499985
+✔ [S1_leverage_binary_k7] done in 1.7 min
+✔ [S1_leverage_binary_k7] slope_all=1.218 slope_q4close=1.54 (n=288) logloss=0.42976 brier=0.14192
+
+── Variant: S1_leverage_continuous_k3 ──
+
+[S1_leverage_continuous_k3] Running WP 5-fold CV (match-grouped), n = 1397409,
+18 features...
+Multiple eval metrics are present. Will use test_logloss for early stopping.
+Will train until test_logloss hasn't improved in 20 rounds.
+
+[1]	train-logloss:0.681243±0.000306	test-logloss:0.681355±0.000893 
+[51]	train-logloss:0.447770±0.006637	test-logloss:0.451313±0.022180 
+[101]	train-logloss:0.405650±0.008076	test-logloss:0.411131±0.029464 
+[151]	train-logloss:0.395848±0.008460	test-logloss:0.402571±0.032637 
+[201]	train-logloss:0.393119±0.008630	test-logloss:0.400451±0.033944 
+[251]	train-logloss:0.392236±0.008690	test-logloss:0.400015±0.034690 
+[301]	train-logloss:0.391842±0.008709	test-logloss:0.400006±0.035155 
+Stopping. Best iteration:
+[304]	train-logloss:0.391821±0.008703	test-logloss:0.400004±0.035174
+
+[304]	train-logloss:0.391821±0.008703	test-logloss:0.400004±0.035174 
+[S1_leverage_continuous_k3] WP optimal nrounds: 284 | CV logloss: 0.399982
+✔ [S1_leverage_continuous_k3] done in 2.3 min
+✔ [S1_leverage_continuous_k3] slope_all=1.193 slope_q4close=1.582 (n=288) logloss=0.42978 brier=0.1421
+  group                   variant slope_all slope_q4close se_q4close n_q4close
+1    S1 S1_leverage_continuous_k3    1.1931        1.5815     0.1746       288
+   logloss    brier n_train optimal_nrounds cv_logloss elapsed_min
+1 0.429779 0.142098 1397409             284   0.399982        2.34
+                   monotone_constraints
+1 (0,0,0,0,1,1,1,0,1,1,0,0,0,0,0,0,0,0)
+                                                                                    notes
+1 weight = 1 + 3*|score_urgency| normalized to [0,1] via p99 cap (continuous form, bonus)
+
+── Variant: S2_drop_constraints ──
+
+[S2_drop_constraints] Running WP 5-fold CV (match-grouped), n = 1397409, 18
+features...
+Multiple eval metrics are present. Will use test_logloss for early stopping.
+Will train until test_logloss hasn't improved in 20 rounds.
+
+[1]	train-logloss:0.683475±0.000335	test-logloss:0.683633±0.000903 
+[51]	train-logloss:0.498285±0.006735	test-logloss:0.504015±0.021544 
+[101]	train-logloss:0.466431±0.007996	test-logloss:0.475660±0.028884 
+[151]	train-logloss:0.459282±0.008298	test-logloss:0.470504±0.031766 
+[201]	train-logloss:0.457330±0.008366	test-logloss:0.469593±0.032871 
+Stopping. Best iteration:
+[248]	train-logloss:0.456524±0.008350	test-logloss:0.469536±0.033465
+
+[248]	train-logloss:0.456524±0.008350	test-logloss:0.469536±0.033465 
+[S2_drop_constraints] WP optimal nrounds: 228 | CV logloss: 0.469497
+✔ [S2_drop_constraints] done in 2 min
+✔ [S2_drop_constraints] slope_all=1.204 slope_q4close=1.627 (n=288) logloss=0.42995 brier=0.14207
+  group             variant slope_all slope_q4close se_q4close n_q4close
+1    S2 S2_drop_constraints    1.2043        1.6272     0.1827       288
+   logloss   brier n_train optimal_nrounds cv_logloss elapsed_min
+1 0.429951 0.14207 1397409             228   0.469497        2.01
+                   monotone_constraints
+1 (0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)
+                                               notes
+1 all 5 monotone constraints dropped (unconstrained)
+[S2_drop_constraints] monotonicity violation rate (Q4/close, points_diff
+perturbation): 0.0527 (3000 pairs, 300 rows) -- vs baseline 0
+
+── Variant: S3_decisiveness_features ──
+
+[S3_decisiveness_features] Running WP 5-fold CV (match-grouped), n = 1397409,
+21 features...
+Multiple eval metrics are present. Will use test_logloss for early stopping.
+Will train until test_logloss hasn't improved in 20 rounds.
+
+[1]	train-logloss:0.683510±0.000313	test-logloss:0.683635±0.000886 
+[51]	train-logloss:0.500107±0.006587	test-logloss:0.504189±0.021170 
+[101]	train-logloss:0.468831±0.007872	test-logloss:0.475340±0.028287 
+[151]	train-logloss:0.462065±0.008167	test-logloss:0.469969±0.031437 
+[201]	train-logloss:0.460306±0.008263	test-logloss:0.468750±0.032617 
+[251]	train-logloss:0.459682±0.008298	test-logloss:0.468569±0.033298 
+Stopping. Best iteration:
+[263]	train-logloss:0.459578±0.008300	test-logloss:0.468575±0.033425
+
+[263]	train-logloss:0.459578±0.008300	test-logloss:0.468575±0.033425 
+[S3_decisiveness_features] WP optimal nrounds: 243 | CV logloss: 0.468557
+✔ [S3_decisiveness_features] done in 2.5 min
+✔ [S3_decisiveness_features] slope_all=1.202 slope_q4close=1.598 (n=288) logloss=0.43021 brier=0.14218
+  group                  variant slope_all slope_q4close se_q4close n_q4close
+1    S3 S3_decisiveness_features    1.2016        1.5977     0.1754       288
+   logloss    brier n_train optimal_nrounds cv_logloss elapsed_min
+1 0.430212 0.142182 1397409             243   0.468557        2.52
+                         monotone_constraints
+1 (0,0,0,0,1,1,1,0,1,1,0,0,0,0,0,0,0,0,1,0,1)
+                                                                                                   notes
+1 pace_rows_per_min=20.672; features: margin_per_remaining_poss, insurmountable, points_diff_time_scaled
+
+── Variant: S4_recency_hl1 ──
+
+[S4_recency_hl1] Running WP 5-fold CV (match-grouped), n = 1397409, 18
+features...
+Multiple eval metrics are present. Will use test_logloss for early stopping.
+Will train until test_logloss hasn't improved in 20 rounds.
+
+[1]	train-logloss:0.683697±0.000595	test-logloss:0.683868±0.001615 
+[51]	train-logloss:0.501274±0.011982	test-logloss:0.507066±0.038925 
+[101]	train-logloss:0.469979±0.014060	test-logloss:0.478925±0.052092 
+[151]	train-logloss:0.462952±0.014624	test-logloss:0.473616±0.057336 
+[201]	train-logloss:0.461065±0.014758	test-logloss:0.472577±0.059005 
+[251]	train-logloss:0.460378±0.014791	test-logloss:0.472427±0.059812 
+Stopping. Best iteration:
+[271]	train-logloss:0.460213±0.014795	test-logloss:0.472459±0.060023
+
+[271]	train-logloss:0.460213±0.014795	test-logloss:0.472459±0.060023 
+[S4_recency_hl1] WP optimal nrounds: 251 | CV logloss: 0.472427
+✔ [S4_recency_hl1] done in 2.3 min
+✔ [S4_recency_hl1] slope_all=1.217 slope_q4close=1.658 (n=288) logloss=0.43051 brier=0.1422
+
+── Variant: S4_recency_hl2 ──
+
+[S4_recency_hl2] Running WP 5-fold CV (match-grouped), n = 1397409, 18
+features...
+Multiple eval metrics are present. Will use test_logloss for early stopping.
+Will train until test_logloss hasn't improved in 20 rounds.
+
+[1]	train-logloss:0.683673±0.000470	test-logloss:0.683809±0.001244 
+[51]	train-logloss:0.500908±0.009262	test-logloss:0.505523±0.029852 
+[101]	train-logloss:0.469687±0.010972	test-logloss:0.476742±0.039941 
+[151]	train-logloss:0.462712±0.011423	test-logloss:0.471208±0.044240 
+[201]	train-logloss:0.460816±0.011560	test-logloss:0.470055±0.045777 
+[251]	train-logloss:0.460148±0.011589	test-logloss:0.469841±0.046535 
+Stopping. Best iteration:
+[286]	train-logloss:0.459905±0.011587	test-logloss:0.469847±0.046861
+
+[286]	train-logloss:0.459905±0.011587	test-logloss:0.469847±0.046861 
+[S4_recency_hl2] WP optimal nrounds: 266 | CV logloss: 0.469822
+✔ [S4_recency_hl2] done in 2.2 min
+✔ [S4_recency_hl2] slope_all=1.203 slope_q4close=1.615 (n=288) logloss=0.43007 brier=0.14216
+
+── Variant: S4_recency_hl4 ──
+
+[S4_recency_hl4] Running WP 5-fold CV (match-grouped), n = 1397409, 18
+features...
+Multiple eval metrics are present. Will use test_logloss for early stopping.
+Will train until test_logloss hasn't improved in 20 rounds.
+
+[1]	train-logloss:0.683663±0.000378	test-logloss:0.683781±0.001048 
+[51]	train-logloss:0.500790±0.007830	test-logloss:0.505012±0.025245 
+[101]	train-logloss:0.469582±0.009331	test-logloss:0.476075±0.033761 
+[151]	train-logloss:0.462648±0.009721	test-logloss:0.470460±0.037401 
+[201]	train-logloss:0.460741±0.009857	test-logloss:0.469219±0.038827 
+[251]	train-logloss:0.460080±0.009897	test-logloss:0.468964±0.039538 
+Stopping. Best iteration:
+[285]	train-logloss:0.459849±0.009898	test-logloss:0.468958±0.039843
+
+[285]	train-logloss:0.459849±0.009898	test-logloss:0.468958±0.039843 
+[S4_recency_hl4] WP optimal nrounds: 265 | CV logloss: 0.468944
+✔ [S4_recency_hl4] done in 1.9 min
+✔ [S4_recency_hl4] slope_all=1.2 slope_q4close=1.587 (n=288) logloss=0.42989 brier=0.14212
+
+── Variant: S5_exclude_draws ──
+
+Excluded 14917 draw-labeled rows from training (1382492 remain)
+[S5_exclude_draws] Running WP 5-fold CV (match-grouped), n = 1382492, 18
+features...
+Multiple eval metrics are present. Will use test_logloss for early stopping.
+Will train until test_logloss hasn't improved in 20 rounds.
+
+[1]	train-logloss:0.683503±0.000275	test-logloss:0.683607±0.000664 
+[51]	train-logloss:0.497755±0.005571	test-logloss:0.501498±0.018169 
+[101]	train-logloss:0.466002±0.006405	test-logloss:0.471814±0.024257 
+[151]	train-logloss:0.458989±0.006585	test-logloss:0.465999±0.026174 
+[201]	train-logloss:0.457041±0.006629	test-logloss:0.464543±0.026884 
+[251]	train-logloss:0.456377±0.006639	test-logloss:0.464197±0.027218 
+Stopping. Best iteration:
+[290]	train-logloss:0.456127±0.006644	test-logloss:0.464170±0.027464
+
+[290]	train-logloss:0.456127±0.006644	test-logloss:0.464170±0.027464 
+[S5_exclude_draws] WP optimal nrounds: 270 | CV logloss: 0.464148
+✔ [S5_exclude_draws] done in 1.6 min
+✔ [S5_exclude_draws] slope_all=1.181 slope_q4close=1.541 (n=288) logloss=0.42938 brier=0.14199
+  group          variant slope_all slope_q4close se_q4close n_q4close  logloss
+1    S5 S5_exclude_draws    1.1807        1.5413     0.1705       288 0.429383
+     brier n_train optimal_nrounds cv_logloss elapsed_min
+1 0.141986 1382492             270   0.464148        1.65
+                   monotone_constraints
+1 (0,0,0,0,1,1,1,0,1,1,0,0,0,0,0,0,0,0)
+                                                   notes
+1 draw-labeled (0.5) rows dropped from training entirely
+
+── Variant: S5_downweight_draws_0.5 ──
+
+[S5_downweight_draws_0.5] Running WP 5-fold CV (match-grouped), n = 1397409, 18
+features...
+Multiple eval metrics are present. Will use test_logloss for early stopping.
+Will train until test_logloss hasn't improved in 20 rounds.
+
+[1]	train-logloss:0.683566±0.000308	test-logloss:0.683688±0.000842 
+[51]	train-logloss:0.499234±0.006447	test-logloss:0.503234±0.020710 
+[101]	train-logloss:0.467792±0.007749	test-logloss:0.473954±0.027891 
+[151]	train-logloss:0.460832±0.008094	test-logloss:0.468299±0.031025 
+[201]	train-logloss:0.458904±0.008229	test-logloss:0.466962±0.032322 
+[251]	train-logloss:0.458248±0.008267	test-logloss:0.466681±0.033018 
+[301]	train-logloss:0.457923±0.008261	test-logloss:0.466652±0.033425 
+Stopping. Best iteration:
+[303]	train-logloss:0.457909±0.008258	test-logloss:0.466651±0.033436
+
+[303]	train-logloss:0.457909±0.008258	test-logloss:0.466651±0.033436 
+[S5_downweight_draws_0.5] WP optimal nrounds: 283 | CV logloss: 0.466639
+✔ [S5_downweight_draws_0.5] done in 1.8 min
+✔ [S5_downweight_draws_0.5] slope_all=1.184 slope_q4close=1.55 (n=288) logloss=0.42952 brier=0.14203
+  group                 variant slope_all slope_q4close se_q4close n_q4close
+1    S5 S5_downweight_draws_0.5    1.1843        1.5499     0.1715       288
+   logloss    brier n_train optimal_nrounds cv_logloss elapsed_min
+1 0.429522 0.142031 1397409             283   0.466639        1.77
+                   monotone_constraints
+1 (0,0,0,0,1,1,1,0,1,1,0,0,0,0,0,0,0,0)
+                                                  notes
+1 draw-labeled (0.5) rows kept but down-weighted to 0.5
+
+── Batch complete ──────────────────────────────────────────────────────────────
+Finished: 2026-07-21 22:26:55.266955
+      group                   variant slope_all slope_q4close se_q4close
+1  baseline                  baseline    1.1897        1.5542     0.1721
+2        S1     S1_leverage_binary_k1    1.1937        1.5546     0.1722
+3        S1     S1_leverage_binary_k3    1.2089        1.5622     0.1729
+4        S1     S1_leverage_binary_k7    1.2181        1.5404     0.1707
+5        S1 S1_leverage_continuous_k3    1.1931        1.5815     0.1746
+6        S2       S2_drop_constraints    1.2043        1.6272     0.1827
+7        S3  S3_decisiveness_features    1.2016        1.5977     0.1754
+8        S4            S4_recency_hl1    1.2167        1.6576     0.1796
+9        S4            S4_recency_hl2    1.2030        1.6154     0.1769
+10       S4            S4_recency_hl4    1.2000        1.5872     0.1743
+11       S5          S5_exclude_draws    1.1807        1.5413     0.1705
+12       S5   S5_downweight_draws_0.5    1.1843        1.5499     0.1715
+   n_q4close  logloss    brier n_train optimal_nrounds cv_logloss elapsed_min
+1        288 0.429697 0.142068 1397409             288   0.468418        2.66
+2        288 0.429591 0.142005 1397409             280   0.474582        2.65
+3        288 0.429716 0.141981 1397409             245   0.484963        2.56
+4        288 0.429760 0.141920 1397409             229   0.499985        1.68
+5        288 0.429779 0.142098 1397409             284   0.399982        2.34
+6        288 0.429951 0.142070 1397409             228   0.469497        2.01
+7        288 0.430212 0.142182 1397409             243   0.468557        2.52
+8        288 0.430508 0.142198 1397409             251   0.472427        2.35
+9        288 0.430068 0.142158 1397409             266   0.469822        2.19
+10       288 0.429894 0.142121 1397409             265   0.468944        1.88
+11       288 0.429383 0.141986 1382492             270   0.464148        1.65
+12       288 0.429522 0.142031 1397409             283   0.466639        1.77
+                          monotone_constraints
+1        (0,0,0,0,1,1,1,0,1,1,0,0,0,0,0,0,0,0)
+2        (0,0,0,0,1,1,1,0,1,1,0,0,0,0,0,0,0,0)
+3        (0,0,0,0,1,1,1,0,1,1,0,0,0,0,0,0,0,0)
+4        (0,0,0,0,1,1,1,0,1,1,0,0,0,0,0,0,0,0)
+5        (0,0,0,0,1,1,1,0,1,1,0,0,0,0,0,0,0,0)
+6        (0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)
+7  (0,0,0,0,1,1,1,0,1,1,0,0,0,0,0,0,0,0,1,0,1)
+8        (0,0,0,0,1,1,1,0,1,1,0,0,0,0,0,0,0,0)
+9        (0,0,0,0,1,1,1,0,1,1,0,0,0,0,0,0,0,0)
+10       (0,0,0,0,1,1,1,0,1,1,0,0,0,0,0,0,0,0)
+11       (0,0,0,0,1,1,1,0,1,1,0,0,0,0,0,0,0,0)
+12       (0,0,0,0,1,1,1,0,1,1,0,0,0,0,0,0,0,0)
+                                                                                                    notes
+1                                                                                                        
+2                                                                               weight = 1 + 1*is_q4close
+3                                                                               weight = 1 + 3*is_q4close
+4                                                                               weight = 1 + 7*is_q4close
+5                 weight = 1 + 3*|score_urgency| normalized to [0,1] via p99 cap (continuous form, bonus)
+6                                                      all 5 monotone constraints dropped (unconstrained)
+7  pace_rows_per_min=20.672; features: margin_per_remaining_poss, insurmountable, points_diff_time_scaled
+8                                                half-life = 1 season(s), anchored at max training season
+9                                                half-life = 2 season(s), anchored at max training season
+10                                               half-life = 4 season(s), anchored at max training season
+11                                                 draw-labeled (0.5) rows dropped from training entirely
+12                                                  draw-labeled (0.5) rows kept but down-weighted to 0.5
