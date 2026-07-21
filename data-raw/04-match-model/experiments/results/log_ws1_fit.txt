@@ -1,0 +1,105 @@
+﻿=== ws_psr_epr_1_psr_vintage.R stage: fit ===
+Rscript : Warning messages:
+At line:2 char:1
++ Rscript "data-raw\04-match-model\experiments\ws_psr_epr_1_psr_vintage ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Warning messages::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+1: package 'ggplot2' was built under R version 4.5.2 
+2: package 'tibble' was built under R version 4.5.2 
+3: package 'tidyr' was built under R version 4.5.2 
+4: package 'purrr' was built under R version 4.5.2 
+5: package 'dplyr' was built under R version 4.5.2 
+6: package 'stringr' was built under R version 4.5.2 
+7: package 'xgboost' was built under R version 4.5.3 
+8: package 'data.table' was built under R version 4.5.2 
+9: package 'glmnet' was built under R version 4.5.2 
+torp 1.3.5 - AFL Analytics and Player Rating System
+Data source: https://github.com/peteowen1/torpdata
+Report issues: https://github.com/peteowen1/torp/issues
+
+── WS1 fit: vintage_2024 + vintage_2025 ────────────────────────────────────────
+
+── fit_psr_vintage(train_through_season = 2024) ──
+
+Disk cache HIT for teams 2021 (9522 rows)
+Disk cache HIT for teams 2022 (9522 rows)
+Disk cache HIT for teams 2023 (9936 rows)
+Disk cache HIT for teams 2024 (11220 rows)
+Disk cache HIT for teams 2025 (11232 rows)
+Train: 846 (season <= 2024), Test: 378 (season > 2024)
+Margin (PSR): alpha=0.5, CV RMSE=34.84, Train RMSE=33.3, Test RMSE=33.84
+Offense (OSR): alpha=1, CV RMSE=23.39, Train RMSE=22.42, Test RMSE=22.64
+Defense (DSR): alpha=1, CV RMSE=21.52, Train RMSE=21.18, Test RMSE=22.93
+
+── fit_psr_vintage(train_through_season = 2025) ──
+
+Train: 1062 (season <= 2025), Test: 162 (season > 2025)
+Margin (PSR): alpha=0, CV RMSE=34.16, Train RMSE=33.12, Test RMSE=32.99
+Offense (OSR): alpha=1, CV RMSE=23.17, Train RMSE=22.43, Test RMSE=22.31
+Defense (DSR): alpha=0, CV RMSE=22.12, Train RMSE=21.14, Test RMSE=21.26
+Both vintages fit in 0.48 min
+
+── Fidelity check: vintage_2024 vs shipped inst/extdata/*.csv ──
+
+
+PSR fidelity: n_matched=48 cor=1.0000 mean_abs_diff=0.0000 max_abs_diff=0.0001 (stat=one_percenters)
+  Top 5 largest diffs:
+               stat_name beta_shipped beta_mine     abs_diff
+          one_percenters     1.178489  1.178420 6.924652e-05
+        ground_ball_gets     1.788505  1.788441 6.479604e-05
+  def_half_pressure_acts    -4.518473 -4.518529 5.558351e-05
+                 tackles     1.274010  1.274053 4.325841e-05
+ uncontested_possessions     2.279043  2.279015 2.855510e-05
+
+OSR fidelity: n_matched=48 cor=1.0000 mean_abs_diff=0.0000 max_abs_diff=0.0001 (stat=score_launches)
+  Top 5 largest diffs:
+          stat_name beta_shipped beta_mine     abs_diff
+     score_launches    1.4396974 1.4398130 1.155714e-04
+    kick_efficiency    0.6346947 0.6346238 7.092757e-05
+ score_involvements    0.2314993 0.2314295 6.972426e-05
+   ground_ball_gets    1.3238379 1.3237706 6.726687e-05
+      metres_gained    0.1729427 0.1730046 6.197149e-05
+
+DSR fidelity: n_matched=48 cor=1.0000 mean_abs_diff=0.0000 max_abs_diff=0.0000 (stat=def_half_pressure_acts)
+  Top 5 largest diffs:
+               stat_name beta_shipped  beta_mine     abs_diff
+  def_half_pressure_acts   -5.0860839 -5.0860401 4.376210e-05
+ uncontested_possessions    0.8666174  0.8665816 3.583128e-05
+              rebound50s   -0.1788138 -0.1788470 3.320134e-05
+        ground_ball_gets    2.0262672  2.0262983 3.117803e-05
+     stoppage_clearances    0.1078879  0.1078686 1.933203e-05
+
+=== FIDELITY CHECK VERDICT (Section 6 falsifier 3): PASS -- vintage_2024 approximately reproduces shipped coefficients, safe to proceed ===
+── Beta drift: vintage_2024 (anchor 2024-12-31) vs vintage_2025 (anchor 2025-12-31) ──
+
+
+Top 15 PSR beta movers, 2024-vintage -> 2025-vintage:
+               stat_name beta_v2024 beta_v2025     delta abs_delta
+              intercepts  6.7679529  2.5369837 -4.230969  4.230969
+  def_half_pressure_acts -4.5185287 -1.7046164  2.813912  2.813912
+      score_involvements  4.9531218  3.0420890 -1.911033  1.911033
+                 behinds  0.0000000  1.8585966  1.858597  1.858597
+ uncontested_possessions  2.2790149  0.5171519 -1.761863  1.761863
+           metres_gained  0.0000000  1.7562159  1.756216  1.756216
+          marks_inside50  0.1829006  1.8645478  1.681647  1.681647
+            goal_assists  0.0000000  1.5789745  1.578975  1.578975
+         kick_efficiency  0.5304126  2.0400073  1.509595  1.509595
+           shots_at_goal  4.3106645  2.9105662 -1.400098  1.400098
+           marks_on_lead  0.0000000 -1.2793282 -1.279328  1.279328
+    f50_ground_ball_gets  0.7527121  2.0254072  1.272695  1.272695
+                 tackles  1.2740533  2.4666512  1.192598  1.192598
+                  spoils  0.3400368  1.4784263  1.138389  1.138389
+          one_percenters  1.1784201  2.2994565  1.121036  1.121036
+
+Margin-model test RMSE: v2024 (on 2025 holdout) = 33.843 | v2025 (on 2026 holdout, n=162) = 32.985
+✔ Saved ws1_fit_summary.rds, ws1_beta_drift.csv, vintage coefficient CSVs
+Warning messages:
+1: Fetched roster for 171 of 207 matches. 
+2: 312 unrecognised team names: "KUW", "KUW", "KUW", "KUW", "KUW", "KUW", "KUW",
+"KUW", "KUW", "KUW", "KUW", "KUW", "KUW", "KUW", "KUW", "KUW", "KUW", "KUW", …,
+"EUR", and "EUR" 
+3: 312 unrecognised team names: "KUW", "KUW", "KUW", "KUW", "KUW", "KUW", "KUW",
+"KUW", "KUW", "KUW", "KUW", "KUW", "KUW", "KUW", "KUW", "KUW", "KUW", "KUW", …,
+"EUR", and "EUR" 
