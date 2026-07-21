@@ -143,6 +143,99 @@ test_that("load_torp_model('wp_calibration') round-trips the object and prints m
   expect_equal(model_meta(result)$model, "wp_calibration")
 })
 
+test_that("download_model_from_release() retries transient piggyback failures before giving up", {  # peteowen1/torpdata#66, #68
+  withr::with_tempdir({
+    local_path <- file.path(getwd(), "ep_model.rds")
+
+    reset_tm_manifest_state <- function() {
+      rm(list = ls(envir = torpmodels:::.tm_manifest_state, all.names = TRUE),
+         envir = torpmodels:::.tm_manifest_state)
+    }
+    reset_tm_manifest_state()
+    withr::defer(reset_tm_manifest_state())
+
+    calls <- 0L
+    testthat::local_mocked_bindings(
+      pb_download = function(file, repo, tag, dest, ...) {
+        if (identical(file, "models_manifest.json")) {
+          stop("404 Not Found")  # legacy mode: no models_manifest.json for this tag
+        }
+        calls <<- calls + 1L
+        if (calls < 3L) stop("500 Internal Server Error")
+        saveRDS(list(ok = TRUE), file.path(dest, file))
+        invisible(NULL)
+      },
+      .package = "piggyback"
+    )
+    testthat::local_mocked_bindings(
+      Sys.sleep = function(...) invisible(NULL),
+      .package = "base"
+    )
+
+    result <- suppressWarnings(torpmodels:::download_model_from_release(
+      "ep_model.rds", "core-models", local_path, verbose = FALSE
+    ))
+
+    expect_true(isTRUE(result))
+    expect_identical(calls, 3L)
+    expect_true(file.exists(local_path))
+    expect_true(readRDS(local_path)$ok)
+  })
+})
+
+test_that("download_model_from_release() does not retry a confirmed-absent (404) error", {
+  withr::with_tempdir({
+    local_path <- file.path(getwd(), "ep_model.rds")
+
+    reset_tm_manifest_state <- function() {
+      rm(list = ls(envir = torpmodels:::.tm_manifest_state, all.names = TRUE),
+         envir = torpmodels:::.tm_manifest_state)
+    }
+    reset_tm_manifest_state()
+    withr::defer(reset_tm_manifest_state())
+
+    # A structured http_error_404 condition is how vb_classify_error()
+    # positively confirms "absent" (see R/versebus.R) -- should_retry must
+    # exclude it and re-raise on the first attempt, unlike a plain transient
+    # error string (which defaults to "transient" and IS retried).
+    absent_404 <- function(...) {
+      stop(structure(
+        class = c("http_error_404", "error", "condition"),
+        list(message = "404 Not Found", call = NULL)
+      ))
+    }
+
+    pb_calls <- 0L
+    testthat::local_mocked_bindings(
+      pb_download = function(file, repo, tag, dest, ...) {
+        if (identical(file, "models_manifest.json")) stop("404 Not Found")
+        pb_calls <<- pb_calls + 1L
+        absent_404()
+      },
+      .package = "piggyback"
+    )
+    dl_calls <- 0L
+    testthat::local_mocked_bindings(
+      download.file = function(...) {
+        dl_calls <<- dl_calls + 1L
+        absent_404()
+      },
+      .package = "utils"
+    )
+
+    expect_error(
+      suppressWarnings(torpmodels:::download_model_from_release(
+        "ep_model.rds", "core-models", local_path, verbose = FALSE
+      )),
+      "Failed to download"
+    )
+    # No retry on a confirmed-absent (404) error at either layer.
+    expect_identical(pb_calls, 1L)
+    expect_identical(dl_calls, 1L)
+    expect_false(file.exists(local_path))
+  })
+})
+
 test_that("load_stat_model() validates stat_name format", {
   expect_error(load_stat_model("GOALS"), "Invalid stat name")
   expect_error(load_stat_model("goals-per-game"), "Invalid stat name")
