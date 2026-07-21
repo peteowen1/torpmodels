@@ -1,0 +1,120 @@
+﻿=== ws_psr_epr_2_epr_grid.R stage: cell_c4 ===
+Rscript : Warning messages:
+At line:2 char:1
++ Rscript "data-raw\04-match-model\experiments\ws_psr_epr_2_epr_grid.R" ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Warning messages::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+1: package 'ggplot2' was built under R version 4.5.2 
+2: package 'tibble' was built under R version 4.5.2 
+3: package 'tidyr' was built under R version 4.5.2 
+4: package 'purrr' was built under R version 4.5.2 
+5: package 'dplyr' was built under R version 4.5.2 
+6: package 'stringr' was built under R version 4.5.2 
+7: package 'xgboost' was built under R version 4.5.3 
+8: package 'data.table' was built under R version 4.5.2 
+torp 1.3.5 - AFL Analytics and Player Rating System
+Data source: https://github.com/peteowen1/torpdata
+Report issues: https://github.com/peteowen1/torp/issues
+
+── WS2 grid cell: m=1.3, p=9 (corner) -- 2026 screen ───────────────────────────
+
+── Building EPR history: m=1.3, p=9 (corner) ──
+
+Disk cache HIT for player_details 2021 (804 rows)
+Disk cache HIT for player_details 2022 (811 rows)
+Disk cache HIT for player_details 2023 (808 rows)
+Disk cache HIT for player_details 2024 (807 rows)
+Disk cache HIT for player_details 2025 (808 rows)
+EPR history rebuild (c4) completed in 1.14 min (130116 rows)
+Disk cache HIT for teams 2021 (9522 rows)
+Disk cache HIT for teams 2022 (9522 rows)
+Disk cache HIT for teams 2023 (9936 rows)
+Disk cache HIT for teams 2024 (11220 rows)
+Disk cache HIT for teams 2025 (11232 rows)
+Replacing 1065 (2%) NA EPR ratings with prior (-2)
+Replacing 1205 (2.2%) NA PSR ratings with prior (-2)
+team_mdl_df: 2314 rows, 211 cols
+Weather joined: 2314 of 2314 rows (100%)
+team_mdl_df rebuild (c4) completed in 0.17 min (2314 rows)
+
+── Pre-optimising XGBoost nrounds (CV on pre-test-season data) ──
+
+nrounds CV input: 950 matches (seasons < 2026)
+XGBoost training on 1898 rows
+✔ XGBoost pipeline trained (32/55/13/63/70 rounds)
+XGBoost nrounds: total_xpoints=32, xscore_diff=55, conv_diff=13, score_diff=63,
+win=70
+
+── Rolling Evaluation: 20 rounds, ~162 matches (2026) ──────────────────────────
+ℹ 2026 R0: train=950, test=5
+✔ 2026 R1: train=955, test=9 [5.6s]
+
+ℹ 2026 R1: train=955, test=9
+✔ 2026 R2: train=964, test=7 [5.6s]
+
+ℹ 2026 R2: train=964, test=7
+✔ 2026 R3: train=971, test=7 [6.5s]
+
+ℹ 2026 R3: train=971, test=7
+✔ 2026 R4: train=978, test=8 [5.9s]
+
+ℹ 2026 R4: train=978, test=8
+✔ 2026 R5: train=986, test=9 [6s]
+
+ℹ 2026 R5: train=986, test=9
+✔ 2026 R6: train=995, test=9 [6.2s]
+
+ℹ 2026 R6: train=995, test=9
+✔ 2026 R7: train=1004, test=9 [5.9s]
+
+ℹ 2026 R7: train=1004, test=9
+✔ 2026 R8: train=1013, test=9 [5.8s]
+
+ℹ 2026 R8: train=1013, test=9
+✔ 2026 R9: train=1022, test=9 [5.4s]
+
+ℹ 2026 R9: train=1022, test=9
+✔ 2026 R10: train=1031, test=9 [6s]
+
+ℹ 2026 R10: train=1031, test=9
+✔ 2026 R11: train=1040, test=9 [5.8s]
+
+ℹ 2026 R11: train=1040, test=9
+✔ 2026 R12: train=1049, test=7 [5.3s]
+
+ℹ 2026 R12: train=1049, test=7
+✔ 2026 R13: train=1056, test=8 [5.3s]
+
+ℹ 2026 R13: train=1056, test=8
+✔ 2026 R14: train=1064, test=7 [5.3s]
+
+ℹ 2026 R14: train=1064, test=7
+✔ 2026 R15: train=1071, test=7 [5.7s]
+
+ℹ 2026 R15: train=1071, test=7
+✔ 2026 R16: train=1078, test=7 [5.9s]
+
+ℹ 2026 R16: train=1078, test=7
+✔ 2026 R17: train=1085, test=9 [5.9s]
+
+ℹ 2026 R17: train=1085, test=9
+✔ 2026 R18: train=1094, test=9 [5.7s]
+
+ℹ 2026 R18: train=1094, test=9
+✔ 2026 R19: train=1103, test=9 [6.4s]
+
+ℹ 2026 R19: train=1103, test=9
+✔ Rolling evaluation complete
+ℹ 2026 R19: train=1103, test=9
+✔ 2026 R19: train=1103, test=9 [5.9s]
+
+m=1.3, p=9 (corner) 2026 screen completed in 2 min
+G4 baseline + V1a recal, 2026 screen             MAE=25.132 RMSE=31.651 Brier=0.1758 Bits=0.2412 Slope=0.914 Cor=0.596 SDRatio=0.652 CloseMAE(n=49)=16.461
+m=1.3, p=9 (corner) + V1a recal, 2026 screen     MAE=24.902 RMSE=31.583 Brier=0.1767 Bits=0.2394 Slope=0.906 Cor=0.600 SDRatio=0.662 CloseMAE(n=49)=16.632
+
+boot_mae_diff(m=1.3, p=9 (corner)+recal - G4 baseline+recal, 2026 screen): N=162 deltaMAE=-0.229 95%CI[-0.826,+0.371] deltaBrier=+0.00092
+Pooled-confirm threshold (deltaMAE <= -0.2): TRUE (-0.229)
+✔ Saved ws2_c4_screen.rds
+There were 23 warnings (use warnings() to see them)

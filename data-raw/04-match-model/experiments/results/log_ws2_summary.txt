@@ -1,0 +1,62 @@
+﻿=== ws_psr_epr_2_epr_grid.R stage: summary ===
+Rscript : Warning messages:
+At line:2 char:1
++ Rscript "data-raw\04-match-model\experiments\ws_psr_epr_2_epr_grid.R" ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Warning messages::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+1: package 'ggplot2' was built under R version 4.5.2 
+2: package 'tibble' was built under R version 4.5.2 
+3: package 'tidyr' was built under R version 4.5.2 
+4: package 'purrr' was built under R version 4.5.2 
+5: package 'dplyr' was built under R version 4.5.2 
+6: package 'stringr' was built under R version 4.5.2 
+7: package 'xgboost' was built under R version 4.5.3 
+8: package 'data.table' was built under R version 4.5.2 
+torp 1.3.5 - AFL Analytics and Player Rating System
+Data source: https://github.com/peteowen1/torpdata
+Report issues: https://github.com/peteowen1/torp/issues
+
+── WS2 Final Summary: EPR aggregation-parameter sensitivity grid ───────────────
+
+=== Control-cell fidelity ===
+Fidelity: PASS
+Control (m=1.0,p=3, this pipeline) + V1a recal, 2026 screen MAE=25.004 RMSE=31.508 Brier=0.1741 Bits=0.2476 Slope=0.912 Cor=0.601 SDRatio=0.659 CloseMAE(n=49)=16.328
+vs published baseline: deltaMAE=-0.127 95%CI[-0.594,+0.317] (this is the pipeline-vs-published confound, NOT an m/p effect)
+Control's own bootstrap MAE CI width: 5.779 (MAE=25.004, CI[22.234,28.014]) -- the correct Section 6.4 noise band
+
+=== 2026 SCREEN grid (all 8 non-control cells), vs published baseline AND vs control ===
+m=0.7, p=3 (corner) (m=0.7,p=3) + V1a recal, 2026 screen MAE=24.913 RMSE=31.494 Brier=0.1728 Bits=0.2507 Slope=0.930 Cor=0.600 SDRatio=0.646 CloseMAE(n=49)=16.673
+  vs published baseline: deltaMAE=-0.218 95%CI[-0.832,+0.353] deltaBrier=-0.00293 confirm_worthy(vs baseline)=TRUE
+  vs control (isolates m/p): deltaMAE=-0.091
+m=0.7, p=9 (corner) (m=0.7,p=9) + V1a recal, 2026 screen MAE=25.052 RMSE=31.697 Brier=0.1755 Bits=0.2439 Slope=0.916 Cor=0.595 SDRatio=0.650 CloseMAE(n=49)=16.950
+  vs published baseline: deltaMAE=-0.080 95%CI[-0.796,+0.631] deltaBrier=-0.00026 confirm_worthy(vs baseline)=FALSE
+  vs control (isolates m/p): deltaMAE=+0.048
+m=1.3, p=3 (corner) (m=1.3,p=3) + V1a recal, 2026 screen MAE=25.005 RMSE=31.700 Brier=0.1773 Bits=0.2381 Slope=0.908 Cor=0.595 SDRatio=0.656 CloseMAE(n=49)=16.627
+  vs published baseline: deltaMAE=-0.127 95%CI[-0.606,+0.360] deltaBrier=+0.00151 confirm_worthy(vs baseline)=FALSE
+  vs control (isolates m/p): deltaMAE=+0.001
+m=1.3, p=9 (corner) (m=1.3,p=9) + V1a recal, 2026 screen MAE=24.902 RMSE=31.583 Brier=0.1767 Bits=0.2394 Slope=0.906 Cor=0.600 SDRatio=0.662 CloseMAE(n=49)=16.632
+  vs published baseline: deltaMAE=-0.229 95%CI[-0.826,+0.371] deltaBrier=+0.00092 confirm_worthy(vs baseline)=TRUE
+  vs control (isolates m/p): deltaMAE=-0.102
+m=0.7, p=6 (edge) (m=0.7,p=6) + V1a recal, 2026 screen MAE=24.950 RMSE=31.447 Brier=0.1730 Bits=0.2514 Slope=0.915 Cor=0.604 SDRatio=0.660 CloseMAE(n=49)=16.852
+  vs published baseline: deltaMAE=-0.181 95%CI[-0.840,+0.467] deltaBrier=-0.00280 confirm_worthy(vs baseline)=FALSE
+  vs control (isolates m/p): deltaMAE=-0.054
+m=1.0, p=6 (edge) (m=1.0,p=6) + V1a recal, 2026 screen MAE=24.921 RMSE=31.442 Brier=0.1765 Bits=0.2366 Slope=0.915 Cor=0.603 SDRatio=0.659 CloseMAE(n=49)=16.716
+  vs published baseline: deltaMAE=-0.210 95%CI[-0.755,+0.360] deltaBrier=+0.00074 confirm_worthy(vs baseline)=TRUE
+  vs control (isolates m/p): deltaMAE=-0.083
+m=1.0, p=9 (edge) (m=1.0,p=9) + V1a recal, 2026 screen MAE=24.982 RMSE=31.663 Brier=0.1760 Bits=0.2423 Slope=0.913 Cor=0.596 SDRatio=0.653 CloseMAE(n=49)=16.216
+  vs published baseline: deltaMAE=-0.150 95%CI[-0.719,+0.439] deltaBrier=+0.00027 confirm_worthy(vs baseline)=FALSE
+  vs control (isolates m/p): deltaMAE=-0.023
+m=1.3, p=6 (edge) (m=1.3,p=6) + V1a recal, 2026 screen MAE=24.776 RMSE=31.491 Brier=0.1764 Bits=0.2392 Slope=0.916 Cor=0.602 SDRatio=0.657 CloseMAE(n=49)=16.854
+  vs published baseline: deltaMAE=-0.356 95%CI[-0.891,+0.200] deltaBrier=+0.00062 confirm_worthy(vs baseline)=TRUE
+  vs control (isolates m/p): deltaMAE=-0.228
+
+=== POOLED confirms (where run) ===
+No cell cleared the deltaMAE <= -0.2 screen threshold -- no pooled confirms run.
+
+=== Section 6.4 flatness falsifier ===
+Screen MAE range across grid (incl. control): 0.276 (min=24.776, max=25.052, control=25.004)
+Control's own bootstrap MAE CI width (noise band): 5.779
+Verdict: FLAT -- grid range < control's own noise band -> EPR aggregation params are NOT a margin lever at team-sum granularity. Ratify April constants. No optimizer re-run authorized.
+✔ Saved ws2_final_summary.rds
