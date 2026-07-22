@@ -229,8 +229,11 @@ vb_read_manifest <- function(repo, tag, required = FALSE) {
     tmpdir <- tempfile("vb_manifest_")
     dir.create(tmpdir)
     on.exit(unlink(tmpdir, recursive = TRUE), add = TRUE)
-    piggyback::pb_download("bus_manifest.json", dest = tmpdir,
-                           repo = repo, tag = tag, overwrite = TRUE)
+    .vb_retry(
+      function() piggyback::pb_download("bus_manifest.json", dest = tmpdir,
+                                        repo = repo, tag = tag, overwrite = TRUE),
+      should_retry = function(e) vb_classify_error(e) != "absent"
+    )
     jsonlite::fromJSON(file.path(tmpdir, "bus_manifest.json"),
                        simplifyVector = TRUE, simplifyDataFrame = TRUE)
   }
@@ -367,8 +370,11 @@ vb_download <- function(repo, tag, name, dest,
   on.exit(unlink(tmpdir, recursive = TRUE), add = TRUE)
 
   tryCatch(
-    piggyback::pb_download(name, dest = tmpdir, repo = repo, tag = tag,
-                           overwrite = TRUE),
+    .vb_retry(
+      function() piggyback::pb_download(name, dest = tmpdir, repo = repo, tag = tag,
+                                        overwrite = TRUE),
+      should_retry = function(e) vb_classify_error(e) != "absent"
+    ),
     error = function(e) {
       .vb_abort("Download of {.val {name}} from {repo}@{tag} failed:
                  {conditionMessage(e)}",
