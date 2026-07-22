@@ -551,6 +551,118 @@ test_that("validate_wp_temporal_slope reports SE on a thin (< 150 deduped obs) q
   expect_true(is.finite(result$se_q4close))
 })
 
+# --- Gate protocol v2 (FABLE-RECAL-PLAN.md §8): shared dedup helper, ---
+# --- cross-fitted gating ------------------------------------------------
+
+test_that("wp_dedup_observations dedups last-row-per-(match_id, bucket) uniformly across cells", {
+  meta <- data.frame(
+    match_id = c("m1", "m1", "m2", "m3"),
+    period = c(4, 4, 4, 1),          # m3 not Q4
+    points_diff = c(5, 5, 20, 5),    # m2's |margin| > 12
+    est_match_elapsed = c(3300, 3300, 3300, 3300),  # m1's two rows share a bucket
+    est_match_remaining = c(100, 100, 100, 100)
+  )
+  preds <- c(0.9, 0.2, 0.5, 0.5)
+  labels <- c(1, 0, 1, 0)
+
+  # "all": no cell restriction before dedup -- m1's two rows collapse to the
+  # LAST one, m2/m3 pass through untouched (no cell filter applied).
+  got_all <- env$wp_dedup_observations(preds, labels, meta, cell = "all")
+  expect_identical(nrow(got_all), 3L)
+  expect_setequal(got_all$match_id, c("m1", "m2", "m3"))
+  m1_row <- got_all[got_all$match_id == "m1", ]
+  expect_equal(m1_row$pred, 0.2)     # last row kept, not first
+  expect_equal(m1_row$label_wp, 0)
+
+  # "q4close": restricts to period == 4 & |margin| <= 12 BEFORE bucketing --
+  # only m1 survives the cell filter, then dedups to its one last row.
+  got_q4c <- env$wp_dedup_observations(preds, labels, meta, cell = "q4close")
+  expect_identical(nrow(got_q4c), 1L)
+  expect_identical(got_q4c$match_id, "m1")
+  expect_equal(got_q4c$pred, 0.2)
+})
+
+test_that("wp_dedup_observations excludes draw rows (label 0.5) before bucketing/deduping", {
+  meta <- data.frame(match_id = c("m1", "m2"), period = 4L, points_diff = 0,
+                     est_match_elapsed = 0, est_match_remaining = 100)
+  got <- env$wp_dedup_observations(c(0.5, 0.7), c(0.5, 1), meta, cell = "all")
+  expect_identical(nrow(got), 1L)
+  expect_identical(got$match_id, "m2")
+})
+
+test_that("wp_dedup_observations carries est_match_remaining through (NA when absent from meta_cols)", {
+  meta_with <- data.frame(match_id = "m1", period = 4L, points_diff = 0,
+                          est_match_elapsed = 0, est_match_remaining = 555)
+  got_with <- env$wp_dedup_observations(0.5, 1, meta_with, cell = "all")
+  expect_equal(got_with$est_match_remaining, 555)
+
+  meta_without <- data.frame(match_id = "m1", period = 4L, points_diff = 0,
+                             est_match_elapsed = 0)
+  got_without <- env$wp_dedup_observations(0.5, 1, meta_without, cell = "all")
+  expect_true(is.na(got_without$est_match_remaining))
+})
+
+test_that("fit_wp_calibration_deduped fits on the deduped set, not raw rows", {
+  # Two rows sharing a (match_id, bucket) must collapse to one observation
+  # before fitting -- a naive raw-row fit would see 2 rows for m1, the
+  # deduped fit sees 1. Cross-check against manually deduping + fitting.
+  meta <- data.frame(
+    match_id = c("m1", "m1", "m2"),
+    period = 4L, points_diff = 0,
+    est_match_elapsed = c(0, 0, 0),
+    est_match_remaining = c(100, 100, 100)
+  )
+  preds <- c(0.3, 0.8, 0.6)
+  labels <- c(0, 1, 1)
+
+  fit <- env$fit_wp_calibration_deduped(preds, labels, meta, form = "global")
+
+  dd <- env$wp_dedup_observations(preds, labels, meta, cell = "all")
+  expect_identical(nrow(dd), 2L)   # m1 deduped to its last row + m2
+  expected <- env$fit_wp_calibration(dd$pred, dd$label_wp)
+  expect_equal(fit$a, expected$a)
+  expect_equal(fit$b, expected$b)
+})
+
+test_that("wp_crossfit_calibrate genuinely scores each fold out-of-fold (never with its own fold's fit)", {
+  set.seed(55)
+  n <- 4000
+  match_id <- paste0("m", seq_len(n))
+  fold <- env$make_match_folds(match_id, k = 2L)   # same construction/seed wp_crossfit_calibrate uses internally
+
+  # Give the two folds DIFFERENT true calibration slopes so calib_A and
+  # calib_B are guaranteed to differ materially -- proves the predictions
+  # were cross-applied, not just "some calibration was applied somewhere".
+  x <- stats::qlogis(stats::runif(n, 0.05, 0.95))
+  true_b <- ifelse(fold == 1L, 0.6, 1.8)
+  y <- stats::rbinom(n, 1, stats::plogis(true_b * x))
+  preds <- stats::plogis(x)
+
+  meta <- data.frame(period = 1L, points_diff = 0, est_match_elapsed = 0,
+                     est_match_remaining = 3000, match_id = match_id)
+  temporal <- list(preds = preds, labels = y, meta_cols = meta)
+
+  result <- env$wp_crossfit_calibrate(temporal, form = "global")
+
+  expect_true(abs(result$calib_A$b - result$calib_B$b) > 0.3)   # folds' fits really differ
+
+  idx_A <- which(result$fold == 1L)
+  idx_B <- which(result$fold == 2L)
+
+  # Fold A's rows must match applying calib_B (the OTHER fold's fit)...
+  expect_equal(result$oof_preds[idx_A],
+              env$apply_wp_calibration(temporal$preds[idx_A], result$calib_B))
+  # ...and must NOT match applying calib_A (its OWN fold's fit).
+  expect_false(isTRUE(all.equal(result$oof_preds[idx_A],
+                                env$apply_wp_calibration(temporal$preds[idx_A], result$calib_A))))
+
+  # Symmetric check for fold B.
+  expect_equal(result$oof_preds[idx_B],
+              env$apply_wp_calibration(temporal$preds[idx_B], result$calib_A))
+  expect_false(isTRUE(all.equal(result$oof_preds[idx_B],
+                                env$apply_wp_calibration(temporal$preds[idx_B], result$calib_B))))
+})
+
 # -----------------------------------------------------------------------
 # train_core_models() WP-branch wiring (mocked -- network-free, no real
 # xgboost training). Order matters within this block only insofar as each
@@ -643,7 +755,8 @@ test_that("calibrate = TRUE (default): fits + gates + saves wp_calibration.rds a
   env$wp_gate_slope <- function(preds, labels, meta_cols, cell, detail = FALSE) {
     if (detail) list(slope = 1.0, se = 0.05, n = 200) else 1.0
   }
-  env$validate_wp_temporal_slope <- function(calibrated_preds, labels, meta_cols, threshold = 0.10) {
+  env$validate_wp_temporal_slope <- function(calibrated_preds, labels, meta_cols,
+                                             threshold = 0.10, threshold_q4close = 0.25) {
     list(slope_all = 1.0, slope_q4close = 1.0, se_q4close = 0.05, n_q4close = 200)
   }
   env$cv_wp_oos_preds <- function(...) rep(0.5, 4)
@@ -676,8 +789,8 @@ test_that("calibrate = TRUE (default): fits + gates + saves wp_calibration.rds a
   expect_identical(saved_calib$ramp_mins, 20)
   expect_identical(saved_calib$margin_cap, 18)
   expect_identical(saved_calib$cell, list(period = 4, margin_abs_max = 12))
-  # split-half bookkeeping: 4 unique fake matches -> 2 + 2
-  expect_identical(saved_calib$n_fit_half_matches + saved_calib$n_gate_half_matches, 4L)
+  # cross-fit bookkeeping: 4 unique fake matches -> fold A + fold B = 2 + 2
+  expect_identical(saved_calib$n_foldA_matches + saved_calib$n_foldB_matches, 4L)
   expect_true(is.finite(saved_calib$max_boundary_jump))
   expect_equal(saved_calib$max_boundary_jump, 0)   # leverage form: continuous, no boundary by construction
 })
@@ -814,7 +927,7 @@ test_that("slope_gate = FALSE warns loudly but never calls validate_wp_temporal_
   expect_true(leverage_fit_requested)
 })
 
-test_that("END-TO-END Path B: global can't fix q4close without overcorrecting all-rows, leverage form ships and passes the split-half gate", {
+test_that("END-TO-END Path B: global can't fix q4close without overcorrecting all-rows, leverage form ships and passes the cross-fit gate", {
   skip_if_not_installed("torp")
 
   # Fresh env: the wiring tests above permanently mock the shared env's
@@ -832,13 +945,16 @@ test_that("END-TO-END Path B: global can't fix q4close without overcorrecting al
   # recovers the true row-level relationship regardless of the class
   # imbalance. Unique match_id per row keeps the q4close dedup a no-op.
   #
-  # Determinism trick (unchanged from the retired escalation test): the
-  # split-half gate would be flaky if the two halves were independent
-  # samples. So both halves get the IDENTICAL (minutes_remaining,
+  # Determinism trick (unchanged from the retired escalation test, now
+  # applied to the cross-fit protocol -- FABLE-RECAL-PLAN.md §8): the
+  # cross-fit gate would be flaky if the two folds were independent
+  # samples. So both folds get the IDENTICAL (minutes_remaining,
   # points_diff, x, y) pair multiset: reproduce the trainer's seed-stable
   # make_match_folds(k = 2) split up front and assign pair i to the i-th
-  # match of each half. The wiring under test (fit on half 1, gate on half
-  # 2) is fully exercised; the gate outcome becomes deterministic.
+  # match of each fold. Fold A and fold B are then statistically identical
+  # replicas of each other, so cross-fitting between them recovers
+  # (a, b, c) close to what a single fit on the full data would -- the gate
+  # outcome becomes deterministic.
   set.seed(99)
   n_pairs <- 3000
   in_cell_pair <- rep(c(TRUE, rep(FALSE, 5)), length.out = n_pairs)   # ~1/6 in-cell
@@ -906,7 +1022,7 @@ test_that("END-TO-END Path B: global can't fix q4close without overcorrecting al
   expect_message(
     env2$train_core_models(models = "wp", seasons = 2021:2024, upload = FALSE,
                            wp_ep_source = "cv", output_dir = out_dir),
-    "Fitted leverage-interaction calibration"
+    "Per-fold leverage-interaction fits"
   )
 
   saved <- readRDS(file.path(out_dir, "wp_calibration.rds"))
@@ -915,14 +1031,15 @@ test_that("END-TO-END Path B: global can't fix q4close without overcorrecting al
   expect_identical(saved$margin_cap, 18)
   expect_true(saved$c > 0.5)                    # recovered a real leverage slope
   expect_true(abs(saved$b - 1) < 0.25)          # w = 0 (out-of-cell) arm stays ~identity
-  # report-only record: the retired D1 global form's gate-half q4close slope
-  # was a breach -- exactly the defect Path B exists to fix.
+  # report-only record: the retired D1 global form's cross-fit pooled OOF
+  # q4close slope was a breach -- exactly the defect Path B exists to fix.
   expect_true(abs(saved$slope_q4close_global - 1) > 0.10)
-  # final: the shipped (leverage) form passes the gate on the held-out half
-  expect_true(abs(saved$slope_q4close_after - 1) <= 0.10)
+  # final: the shipped (leverage) form passes the cross-fit gate (§8: all
+  # within 0.10, q4close within the widened 0.25)
+  expect_true(abs(saved$slope_q4close_after - 1) <= 0.25)
   expect_true(abs(saved$slope_after - 1) <= 0.10)
-  # split-half bookkeeping recorded
-  expect_identical(saved$n_fit_half_matches + saved$n_gate_half_matches, length(unique(fake_meta$match_id)))
+  # cross-fit bookkeeping recorded
+  expect_identical(saved$n_foldA_matches + saved$n_foldB_matches, length(unique(fake_meta$match_id)))
   # leverage form has no cell-boundary jump by construction (continuous weight)
   expect_equal(saved$max_boundary_jump, 0)
 })
