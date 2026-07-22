@@ -578,6 +578,90 @@ wp_cell_flag <- function(meta_cols, period = 4, margin_abs_max = 12) {
   flag
 }
 
+#' Shared dedup observation-set builder (gate protocol v2, FABLE-RECAL-PLAN.md
+#' \enc{§}{Section}8 point 2)
+#'
+#' Draws-excluded, last-row-per-(match_id, 5-min bucket) dedup -- the single
+#' anti-pseudoreplication convention now used by BOTH the calibration fit
+#' ([fit_wp_calibration_deduped()]) and the gate statistic ([wp_gate_slope()]),
+#' so fit and gate are provably built from the same observation set. \enc{§}{Section}8:
+#' "aligns objective with metric and removes the pseudoreplication that
+#' inflated b to ~1.4." Supersedes the pre-\enc{§}{Section}8 split where only the
+#' `"q4close"` cell deduped and `"all"` fit/gated on raw undeduped event rows.
+#'
+#' Bucket = `est_match_elapsed \%/\% 300` (plain 5-minute windows since
+#' kickoff) -- NOT the pre-\enc{§}{Section}8 `"q4close"`-only dedup's
+#' `pmin(4, pmax(0, ... - 11))` offset/clamp, which assumed every input row
+#' was already restricted to Q4 (an assumption `"all"` doesn't satisfy). A
+#' plain floor works uniformly for both cells and produces the identical
+#' grouping within Q4/close except for rare extended-time-on rows, which now
+#' land in their own bucket instead of being merged into a shared tail
+#' bucket.
+#'
+#' @param preds Numeric vector of WP predictions.
+#' @param labels Numeric vector, same length, values in `{0, 0.5, 1}`.
+#' @param meta_cols Data frame with `period`, `points_diff`,
+#'   `est_match_elapsed`, `match_id` (and `est_match_remaining` if present --
+#'   carried through so callers can derive [wp_leverage_weight()] on the
+#'   deduped rows without re-joining).
+#' @param cell One of `"all"` (default, no cell restriction before dedup) or
+#'   `"q4close"` (restrict to [wp_cell_flag()] before bucketing/deduping).
+#' @return Data frame, one row per kept `(match_id, bucket)`: `pred`,
+#'   `label_wp`, `match_id`, `bucket`, `period`, `points_diff`,
+#'   `est_match_elapsed`, `est_match_remaining` (`NA` if absent from
+#'   `meta_cols`).
+#' @keywords internal
+wp_dedup_observations <- function(preds, labels, meta_cols, cell = c("all", "q4close")) {
+  cell <- match.arg(cell)
+  d <- data.frame(
+    pred = preds, label_wp = labels,
+    period = meta_cols$period, points_diff = meta_cols$points_diff,
+    est_match_elapsed = meta_cols$est_match_elapsed,
+    est_match_remaining = if ("est_match_remaining" %in% names(meta_cols)) {
+      meta_cols$est_match_remaining
+    } else {
+      NA_real_
+    },
+    match_id = meta_cols$match_id
+  )
+  d <- d[d$label_wp %in% c(0, 1), ]
+  if (cell == "q4close") d <- d[wp_cell_flag(d), ]
+
+  d$bucket <- d$est_match_elapsed %/% 300
+  d |>
+    dplyr::group_by(.data$match_id, .data$bucket) |>
+    dplyr::summarise(
+      label_wp = dplyr::last(.data$label_wp),
+      pred = dplyr::last(.data$pred),
+      period = dplyr::last(.data$period),
+      points_diff = dplyr::last(.data$points_diff),
+      est_match_elapsed = dplyr::last(.data$est_match_elapsed),
+      est_match_remaining = dplyr::last(.data$est_match_remaining),
+      .groups = "drop"
+    )
+}
+
+#' Fit a WP calibration on the shared dedup observation set (gate protocol
+#' v2, \enc{§}{Section}8 point 2)
+#'
+#' Builds the deduped observation set ([wp_dedup_observations()], `cell =
+#' "all"` -- the whole row set passed in, not restricted to Q4/close),
+#' derives the leverage weight on those deduped rows, and fits
+#' [fit_wp_calibration()] on them. [wp_gate_slope()] measures its slopes via
+#' the SAME dedup helper, so fit and gate are provably built from the same
+#' observation set.
+#'
+#' @param preds,labels,meta_cols As [wp_dedup_observations()].
+#' @param form Passed to [fit_wp_calibration()], default
+#'   `"leverage_interaction_v1"`.
+#' @return See [fit_wp_calibration()].
+#' @keywords internal
+fit_wp_calibration_deduped <- function(preds, labels, meta_cols, form = "leverage_interaction_v1") {
+  dd <- wp_dedup_observations(preds, labels, meta_cols, cell = "all")
+  w <- wp_leverage_weight(dd$est_match_remaining / 60, dd$points_diff)
+  fit_wp_calibration(dd$pred, dd$label_wp, w = w, form = form)
+}
+
 #' Apply a fitted WP calibration to raw predictions
 #'
 #' Dispatches on `calib$form`. `"leverage_interaction_v1"` (\enc{§}{Section}7 Path B):
@@ -666,28 +750,21 @@ wp_calibration_boundary_jump <- function(calib, grid = seq(0.05, 0.95, by = 0.01
 wp_gate_cell_diagnostics <- function(preds, labels, meta_cols, label = NULL) {
   tag <- if (is.null(label)) "" else paste0("[", label, "] ")
 
-  d <- data.frame(
-    pred = preds, label_wp = labels,
-    period = meta_cols$period, points_diff = meta_cols$points_diff,
-    est_match_elapsed = meta_cols$est_match_elapsed, match_id = meta_cols$match_id
-  )
-  n_total_matches <- length(unique(d$match_id))
-  d <- d[d$label_wp %in% c(0, 1), ]
-  cell <- d[wp_cell_flag(d), ]
+  n_total_matches <- length(unique(meta_cols$match_id))
+  raw <- data.frame(period = meta_cols$period, points_diff = meta_cols$points_diff,
+                    label_wp = labels)
+  raw <- raw[raw$label_wp %in% c(0, 1), ]
+  n_raw_cell <- sum(wp_cell_flag(raw))
 
-  if (nrow(cell) == 0) {
+  dd <- wp_dedup_observations(preds, labels, meta_cols, cell = "q4close")
+
+  if (nrow(dd) == 0) {
     cli::cli_warn("{tag}Q4/close gate cell is EMPTY -- no diagnostics possible")
     return(invisible(NULL))
   }
 
-  cell$bucket <- pmin(4, pmax(0, cell$est_match_elapsed %/% 300 - 11))
-  dd <- cell |>
-    dplyr::group_by(.data$match_id, .data$bucket) |>
-    dplyr::summarise(label_wp = dplyr::last(.data$label_wp),
-                     pred = dplyr::last(.data$pred), .groups = "drop")
-
   cli::cli_inform(
-    "{tag}{n_total_matches} matches total | Q4/close cell: {length(unique(cell$match_id))} matches, {nrow(cell)} raw rows, {nrow(dd)} deduped (match_id, bucket) obs"
+    "{tag}{n_total_matches} matches total | Q4/close cell: {length(unique(dd$match_id))} matches, {n_raw_cell} raw rows, {nrow(dd)} deduped (match_id, bucket) obs"
   )
 
   dd$decile <- cut(dd$pred, seq(0, 1, 0.1), include.lowest = TRUE)
@@ -706,14 +783,18 @@ wp_gate_cell_diagnostics <- function(preds, labels, meta_cols, label = NULL) {
   invisible(rel)
 }
 
-#' Calibration-slope gate statistic (D5)
+#' Calibration-slope gate statistic (D5, deduped convention per gate
+#' protocol v2 \enc{§}{Section}8 point 2)
 #'
-#' `cell = "all"`: row-level `glm(label ~ qlogis(pred), binomial)` slope
-#' over every non-draw row. `cell = "q4close"`: the same GLM restricted to
-#' `period == 4 & abs(points_diff) <= 12`, after the anti-pseudoreplication
-#' dedup convention quoted in torpverse/docs/plans/FABLE-RECAL-PLAN.md D5 -- bucket rows into
-#' 5-minute buckets (`pmin(4, pmax(0, est_match_elapsed %/% 300 - 11))`)
-#' and keep only the last row per `(match_id, bucket)` before fitting.
+#' `cell = "all"`: `glm(label ~ qlogis(pred), binomial)` slope over the
+#' deduped observation set ([wp_dedup_observations()], `cell = "all"`).
+#' `cell = "q4close"`: the same GLM restricted to `period == 4 &
+#' abs(points_diff) <= 12` before deduping ([wp_dedup_observations()], `cell
+#' = "q4close"`). Both cells now share the identical last-row-per-(match_id,
+#' 5-min bucket) anti-pseudoreplication convention (\enc{§}{Section}8 point 2 -- prior to
+#' gate protocol v2, only `"q4close"` deduped and `"all"` fit/gated on raw
+#' undeduped event rows, which \enc{§}{Section}8's diagnosis identified as the source of
+#' the fit/gate split's pseudoreplication).
 #'
 #' @param preds Numeric vector of (typically calibrated) WP predictions.
 #' @param labels Numeric vector, same length, values in `{0, 0.5, 1}`.
@@ -731,22 +812,7 @@ wp_gate_cell_diagnostics <- function(preds, labels, meta_cols, label = NULL) {
 wp_gate_slope <- function(preds, labels, meta_cols, cell = c("q4close", "all"),
                           detail = FALSE) {
   cell <- match.arg(cell)
-
-  d <- data.frame(
-    pred = preds, label_wp = labels,
-    period = meta_cols$period, points_diff = meta_cols$points_diff,
-    est_match_elapsed = meta_cols$est_match_elapsed, match_id = meta_cols$match_id
-  )
-  d <- d[d$label_wp %in% c(0, 1), ]
-
-  if (cell == "q4close") {
-    d <- d[wp_cell_flag(d), ]
-    d$bucket <- pmin(4, pmax(0, d$est_match_elapsed %/% 300 - 11))
-    d <- d |>
-      dplyr::group_by(.data$match_id, .data$bucket) |>
-      dplyr::summarise(label_wp = dplyr::last(.data$label_wp),
-                       pred = dplyr::last(.data$pred), .groups = "drop")
-  }
+  d <- wp_dedup_observations(preds, labels, meta_cols, cell = cell)
 
   if (nrow(d) < 2 || length(unique(d$label_wp)) < 2) {
     if (detail) return(list(slope = NA_real_, se = NA_real_, n = nrow(d)))
@@ -764,43 +830,52 @@ wp_gate_slope <- function(preds, labels, meta_cols, cell = c("q4close", "all"),
   list(slope = slope, se = se, n = nrow(d))
 }
 
-#' The temporal Q4/close release gate (D5) -- aborts before anything is
-#' written or published
+#' The temporal Q4/close release gate (D5, precision-honest tolerances per
+#' gate protocol v2 \enc{§}{Section}8 point 3) -- aborts before anything is written or
+#' published
 #'
-#' Gates BOTH the all-rows and Q4/close-cell calibrated slopes at the same
-#' threshold: `|slope - 1| <= threshold`. Fires as `cli::cli_abort()` in the
-#' same idiom as [validate_wp_spec()]/`publish_model_group()` -- a loud
-#' bulleted message with the measured slopes, before any `saveRDS`/upload.
+#' Gates the all-rows calibrated slope at `|slope_all - 1| <= threshold`
+#' (default `0.10`) and the Q4/close-cell slope at `|slope_q4close - 1| <=
+#' threshold_q4close` (default `0.25` -- widened from the original single
+#' `0.10` because the q4close cell's split sd (~0.6, n≈288, SE≈0.17) made the
+#' tighter tolerance near-unpassable for a genuinely calibrated model; \enc{§}{Section}8
+#' full evidence in `docs/reviews/2026-WP-GATE-SPLIT-DIAGNOSIS.md`). Fires as
+#' `cli::cli_abort()` in the same idiom as
+#' [validate_wp_spec()]/`publish_model_group()` -- a loud bulleted message
+#' with the measured slopes, before any `saveRDS`/upload.
 #'
 #' @param calibrated_preds Numeric vector of calibrated WP predictions.
 #' @param labels Numeric vector, same length, values in `{0, 0.5, 1}`.
 #' @param meta_cols Data frame, see [wp_gate_slope()].
-#' @param threshold Numeric, default `0.10` (D5). The threshold itself never
-#'   widens -- on a thin Q4/close cell (deduped n < 150) the gate
-#'   additionally reports the slope's GLM standard error so a breach can be
-#'   judged against noise, but still gates at 0.10.
+#' @param threshold Numeric, default `0.10` -- the all-rows tolerance.
+#' @param threshold_q4close Numeric, default `0.25` -- the Q4/close-cell
+#'   tolerance (\enc{§}{Section}8 point 3). Neither threshold widens further on a thin
+#'   cell -- the gate additionally reports the slope's GLM standard error
+#'   (deduped n < 150) so a breach can be judged against noise, but still
+#'   gates at `threshold_q4close`.
 #' @return `list(slope_all, slope_q4close, se_q4close, n_q4close)`,
 #'   reachable via return value only on a pass (the function aborts on a
 #'   breach).
 #' @keywords internal
-validate_wp_temporal_slope <- function(calibrated_preds, labels, meta_cols, threshold = 0.10) {
+validate_wp_temporal_slope <- function(calibrated_preds, labels, meta_cols,
+                                       threshold = 0.10, threshold_q4close = 0.25) {
   slope_all <- wp_gate_slope(calibrated_preds, labels, meta_cols, cell = "all")
   q4c <- wp_gate_slope(calibrated_preds, labels, meta_cols, cell = "q4close", detail = TRUE)
   slope_q4close <- q4c$slope
 
   ok_all <- !is.na(slope_all) && abs(slope_all - 1) <= threshold
-  ok_q4close <- !is.na(slope_q4close) && abs(slope_q4close - 1) <= threshold
+  ok_q4close <- !is.na(slope_q4close) && abs(slope_q4close - 1) <= threshold_q4close
 
   thin_cell <- !is.na(q4c$n) && q4c$n < 150
   q4c_detail <- if (thin_cell) {
-    " [THIN CELL: n = {q4c$n} deduped obs < 150 -- slope SE = {round(q4c$se, 3)}; judge breach vs noise, gate still 0.10]"
+    " [THIN CELL: n = {q4c$n} deduped obs < 150 -- slope SE = {round(q4c$se, 3)}; judge breach vs noise, gate still {threshold_q4close}]"
   } else {
     " (n = {q4c$n} deduped obs)"
   }
 
   if (!ok_all || !ok_q4close) {
     cli::cli_abort(c(
-      "WP temporal slope gate FAILED -- |slope - 1| must be <= {threshold}",
+      "WP temporal slope gate FAILED -- |slope_all - 1| must be <= {threshold}, |slope_q4close - 1| must be <= {threshold_q4close}",
       "x" = "slope_all = {round(slope_all, 3)} ({if (ok_all) 'ok' else 'BREACH'})",
       "x" = paste0("slope_q4close = {round(slope_q4close, 3)} ({if (ok_q4close) 'ok' else 'BREACH'})", q4c_detail),
       "i" = "Nothing written or published. Emergency override: train_models.R --skip-slope-gate."
@@ -808,12 +883,59 @@ validate_wp_temporal_slope <- function(calibrated_preds, labels, meta_cols, thre
   }
 
   cli::cli_alert_success(paste0(
-    "WP temporal slope gate passed: slope_all = {round(slope_all, 3)}, slope_q4close = {round(slope_q4close, 3)}",
-    q4c_detail, " (threshold {threshold})"
+    "WP temporal slope gate passed: slope_all = {round(slope_all, 3)} (threshold {threshold}), slope_q4close = {round(slope_q4close, 3)} (threshold {threshold_q4close})",
+    q4c_detail
   ))
 
   list(slope_all = slope_all, slope_q4close = slope_q4close,
        se_q4close = q4c$se, n_q4close = q4c$n)
+}
+
+#' Cross-fitted leverage calibration over the gate season (gate protocol v2,
+#' FABLE-RECAL-PLAN.md \enc{§}{Section}8 point 1)
+#'
+#' Splits the gate season's matches into 2 folds (match-grouped, seed-stable
+#' [make_match_folds()] -- the identical split construction the pre-\enc{§}{Section}8
+#' split-half protocol used), fits a calibration on each fold's deduped
+#' observations ([fit_wp_calibration_deduped()]), and cross-applies: fold
+#' A's rows are calibrated using fold B's fit and vice versa, so no row is
+#' ever scored by a calibration fitted on its own fold ("out-of-fold").
+#' Returns the pooled OOF calibrated predictions at raw event-row
+#' granularity, same order/length as `temporal$preds` -- callers dedup at
+#' measurement time via [wp_gate_slope()]/[wp_gate_cell_diagnostics()].
+#'
+#' @param temporal `list(preds, labels, meta_cols)`, e.g. from
+#'   [fit_wp_temporal_variant()].
+#' @param form Calibration form passed to [fit_wp_calibration_deduped()],
+#'   default `"leverage_interaction_v1"`.
+#' @param seed Fold-split seed, default `1234L` (matches
+#'   [make_match_folds()]'s own default).
+#' @return `list(fold, calib_A, calib_B, oof_preds, oof_labels, oof_meta)` --
+#'   `fold` is the per-row fold id (1L/2L, same order as `temporal$preds`);
+#'   `oof_preds[i]` is `temporal$preds[i]` calibrated by the OTHER fold's
+#'   fit; `oof_labels`/`oof_meta` are `temporal$labels`/`temporal$meta_cols`
+#'   unchanged (returned for caller convenience).
+#' @keywords internal
+wp_crossfit_calibrate <- function(temporal, form = "leverage_interaction_v1", seed = 1234L) {
+  fold <- make_match_folds(temporal$meta_cols$match_id, k = 2L, seed = seed)
+  idx_A <- which(fold == 1L)
+  idx_B <- which(fold == 2L)
+  meta_A <- temporal$meta_cols[idx_A, , drop = FALSE]
+  meta_B <- temporal$meta_cols[idx_B, , drop = FALSE]
+
+  calib_A <- fit_wp_calibration_deduped(temporal$preds[idx_A], temporal$labels[idx_A], meta_A, form = form)
+  calib_B <- fit_wp_calibration_deduped(temporal$preds[idx_B], temporal$labels[idx_B], meta_B, form = form)
+
+  w_A <- wp_leverage_weight(meta_A$est_match_remaining / 60, meta_A$points_diff)
+  w_B <- wp_leverage_weight(meta_B$est_match_remaining / 60, meta_B$points_diff)
+
+  oof_preds <- rep(NA_real_, length(temporal$preds))
+  oof_preds[idx_A] <- apply_wp_calibration(temporal$preds[idx_A], calib_B, w = w_A)  # A scored by B's fit
+  oof_preds[idx_B] <- apply_wp_calibration(temporal$preds[idx_B], calib_A, w = w_B)  # B scored by A's fit
+  stopifnot(!anyNA(oof_preds))
+
+  list(fold = fold, calib_A = calib_A, calib_B = calib_B,
+       oof_preds = oof_preds, oof_labels = temporal$labels, oof_meta = temporal$meta_cols)
 }
 
 #' Fit the shot outcome model (ordered categorical GAM)
@@ -993,30 +1115,41 @@ train_core_models <- function(models = c("ep", "wp", "shot"),
       temporal <- fit_wp_temporal_variant(model_data_epv, gate_season,
                                           params_ep = ep_params(), params_wp = wp_params())
 
-      # ---- Split-half fit/gate within the holdout season -------------------
-      # Fitting the calibration on the gate season AND gating on the same
-      # rows is partly self-confirming (the cell that gets its own
-      # interaction term near-guarantees its own pass). So: split the gate
-      # season's MATCHES (match-grouped, seed-stable -- same construction as
-      # make_match_folds) into a calibration half and a validation half.
-      # ALL fitting (global + any escalation refit) sees only the fit half;
-      # ALL gate slopes are measured only on the gate half.
+      # ---- Cross-fitted gating within the holdout season (gate protocol v2,
+      # FABLE-RECAL-PLAN.md \enc{§}{Section}8, 2026-07-22) ---------------------------------
+      # The pre-\enc{§}{Section}8 split-half protocol (fit on half A, gate on held-out
+      # half B) was diagnosed as pseudoreplicated and noisy across two
+      # consecutive gate failures: 175K "rows" per half collapse to ~1,700
+      # quasi-independent 5-min buckets, and the fit/gate slope gap swung
+      # -0.26 to +0.47 across 7 reseedings of the SAME split construction
+      # (docs/reviews/2026-WP-GATE-SPLIT-DIAGNOSIS.md). Cross-fitting pools
+      # BOTH folds' out-of-fold calibrated predictions into one gate
+      # statistic over the full gate season instead of judging one noisy
+      # half against another.
       half <- make_match_folds(temporal$meta_cols$match_id, k = 2L)
-      fit_idx <- which(half == 1L)
-      gate_idx <- which(half == 2L)
-      fit_meta <- temporal$meta_cols[fit_idx, , drop = FALSE]
-      gate_meta <- temporal$meta_cols[gate_idx, , drop = FALSE]
-      n_fit_half_matches <- length(unique(fit_meta$match_id))
-      n_gate_half_matches <- length(unique(gate_meta$match_id))
+      n_foldA_matches <- length(unique(temporal$meta_cols$match_id[half == 1L]))
+      n_foldB_matches <- length(unique(temporal$meta_cols$match_id[half == 2L]))
       cli::cli_inform(
-        "Split-half within gate season {gate_season}: fit half = {n_fit_half_matches} matches ({length(fit_idx)} rows), gate half = {n_gate_half_matches} matches ({length(gate_idx)} rows)"
+        "Cross-fit split within gate season {gate_season}: fold A = {n_foldA_matches} matches ({sum(half == 1L)} rows), fold B = {n_foldB_matches} matches ({sum(half == 2L)} rows)"
       )
 
-      slope_all_before <- wp_gate_slope(temporal$preds[gate_idx], temporal$labels[gate_idx], gate_meta, "all")
-      slope_q4close_before <- wp_gate_slope(temporal$preds[gate_idx], temporal$labels[gate_idx], gate_meta, "q4close")
-      cli::cli_inform("Uncalibrated temporal slopes (gate half): all = {round(slope_all_before, 3)}, q4close = {round(slope_q4close_before, 3)}")
+      slope_all_before <- wp_gate_slope(temporal$preds, temporal$labels, temporal$meta_cols, "all")
+      slope_q4close_before <- wp_gate_slope(temporal$preds, temporal$labels, temporal$meta_cols, "q4close")
+      cli::cli_inform("Uncalibrated temporal slopes (full gate season {gate_season}): all = {round(slope_all_before, 3)}, q4close = {round(slope_q4close_before, 3)}")
 
-      # ---- Path B (FABLE-RECAL-PLAN.md \enc{§}{Section}7, 2026-07-21): state-dependent
+      # Report-only counterfactual: what the retired D1 global 2-param fit
+      # would have shipped, cross-fit pooled the same way as the shipped
+      # form below -- kept purely for log continuity/monitoring, never
+      # applied, never gated. Shows exactly the defect Path B exists to fix.
+      cf_global <- wp_crossfit_calibrate(temporal, form = "global")
+      slope_all_global <- wp_gate_slope(cf_global$oof_preds, cf_global$oof_labels, cf_global$oof_meta, "all")
+      slope_q4close_global <- wp_gate_slope(cf_global$oof_preds, cf_global$oof_labels, cf_global$oof_meta, "q4close")
+      cli::cli_inform(paste0(
+        "[report-only, retired D1 form] Global-form cross-fit pooled OOF slopes: all = {round(slope_all_global, 3)}, q4close = {round(slope_q4close_global, 3)} ",
+        "(fold A: a = {round(cf_global$calib_A$a, 4)}, b = {round(cf_global$calib_A$b, 4)} | fold B: a = {round(cf_global$calib_B$a, 4)}, b = {round(cf_global$calib_B$b, 4)})"
+      ))
+
+      # Path B (FABLE-RECAL-PLAN.md \enc{§}{Section}7, 2026-07-21): state-dependent
       # calibration form -- REPLACES D1's global fit (and its conditional
       # 4-param q4close_interaction escalation) as the form that is actually
       # fitted and shipped. The 2026-07-21 gated retrain proved a single
@@ -1024,59 +1157,39 @@ train_core_models <- function(models = c("ep", "wp", "shot"),
       # overcorrected all-rows to 0.715 while q4close stayed 1.245 -- both
       # breaches); S1-S5 raw-model sharpening came back null
       # (WP-SHARPNESS-RESULTS.md). The leverage-weighted interaction fits a
-      # continuous per-row correction instead of one global slope.
-      is_q4c_fit <- wp_cell_flag(fit_meta)
-      is_q4c_gate <- wp_cell_flag(gate_meta)
-      w_fit <- wp_leverage_weight(fit_meta$est_match_remaining / 60, fit_meta$points_diff)
-      w_gate <- wp_leverage_weight(gate_meta$est_match_remaining / 60, gate_meta$points_diff)
+      # continuous per-row correction instead of one global slope. Cross-fit
+      # per point 1: fit on each fold's deduped rows, apply cross-fold.
+      cf_leverage <- wp_crossfit_calibrate(temporal, form = "leverage_interaction_v1")
+      cli::cli_inform(paste0(
+        "Per-fold leverage-interaction fits: fold A a = {round(cf_leverage$calib_A$a, 4)}, b = {round(cf_leverage$calib_A$b, 4)}, c = {round(cf_leverage$calib_A$c, 4)} | ",
+        "fold B a = {round(cf_leverage$calib_B$a, 4)}, b = {round(cf_leverage$calib_B$b, 4)}, c = {round(cf_leverage$calib_B$c, 4)}"
+      ))
 
-      # Report-only counterfactual: what the retired D1 global 2-param fit
-      # would have shipped, kept purely for log continuity/monitoring --
-      # never applied, never gated. Shows exactly the defect Path B exists
-      # to fix.
-      calib_global <- fit_wp_calibration(temporal$preds[fit_idx], temporal$labels[fit_idx])
-      cal_fit_global <- apply_wp_calibration(temporal$preds[fit_idx], calib_global, is_q4c_fit)
-      slope_q4close_fithalf_global <- wp_gate_slope(cal_fit_global, temporal$labels[fit_idx], fit_meta, "q4close")
-      cal_gate_global <- apply_wp_calibration(temporal$preds[gate_idx], calib_global, is_q4c_gate)
-      slope_all_global <- wp_gate_slope(cal_gate_global, temporal$labels[gate_idx], gate_meta, "all")
-      slope_q4close_global <- wp_gate_slope(cal_gate_global, temporal$labels[gate_idx], gate_meta, "q4close")
-      cli::cli_inform(
-        "[report-only, retired D1 form] Global-form calibrated slopes: fit-half q4close = {round(slope_q4close_fithalf_global, 3)} (escalation check) | gate-half all = {round(slope_all_global, 3)}, q4close = {round(slope_q4close_global, 3)}"
-      )
-
-      # Path B: the leverage-interaction form, fitted directly on the fit
-      # half -- this IS the shipped form, no further conditional escalation
-      # (S6, a specialist Q4/close submodel, is the next escalation if Path
-      # B itself fails the gate below -- that is a Pete decision, not
-      # automated here). Per \enc{§}{Section}7: do not tune ramp_mins/margin_cap against
-      # the gate.
-      calib <- fit_wp_calibration(temporal$preds[fit_idx], temporal$labels[fit_idx],
-                                  w = w_fit, form = "leverage_interaction_v1")
-      cli::cli_inform(
-        "Fitted leverage-interaction calibration (fit half): a = {round(calib$a, 4)}, b = {round(calib$b, 4)}, c = {round(calib$c, 4)}"
-      )
-      cal_fit_leverage <- apply_wp_calibration(temporal$preds[fit_idx], calib, w = w_fit)
-      slope_q4close_fithalf_leverage <- wp_gate_slope(cal_fit_leverage, temporal$labels[fit_idx], fit_meta, "q4close")
-      cli::cli_inform(
-        "Leverage-interaction calibrated slopes: fit-half q4close = {round(slope_q4close_fithalf_leverage, 3)} (escalation check)"
-      )
-
-      # Final calibrated predictions on the gate half -- the only rows the
-      # gate ever sees. Genuine out-of-sample for the calibration fit.
-      calibrated_gate <- apply_wp_calibration(temporal$preds[gate_idx], calib, w = w_gate)
-
+      # Pooled OOF calibrated predictions over the FULL gate season -- the
+      # only rows the gate ever sees. Genuinely out-of-fold: fold A's rows
+      # are calibrated by fold B's fit and vice versa.
       if (isTRUE(slope_gate)) {
-        gated <- validate_wp_temporal_slope(calibrated_gate, temporal$labels[gate_idx], gate_meta, threshold = 0.10)
+        gated <- validate_wp_temporal_slope(cf_leverage$oof_preds, cf_leverage$oof_labels, cf_leverage$oof_meta,
+                                            threshold = 0.10, threshold_q4close = 0.25)
         slope_all_after <- gated$slope_all
         slope_q4close_after <- gated$slope_q4close
       } else {
-        slope_all_after <- wp_gate_slope(calibrated_gate, temporal$labels[gate_idx], gate_meta, "all")
-        q4c_detail <- wp_gate_slope(calibrated_gate, temporal$labels[gate_idx], gate_meta, "q4close", detail = TRUE)
+        slope_all_after <- wp_gate_slope(cf_leverage$oof_preds, cf_leverage$oof_labels, cf_leverage$oof_meta, "all")
+        q4c_detail <- wp_gate_slope(cf_leverage$oof_preds, cf_leverage$oof_labels, cf_leverage$oof_meta, "q4close", detail = TRUE)
         slope_q4close_after <- q4c_detail$slope
         cli::cli_alert_warning(
-          "Slope gate skipped (slope_gate = FALSE): all = {round(slope_all_after, 3)}, q4close = {round(slope_q4close_after, 3)} (n = {q4c_detail$n}, SE = {round(q4c_detail$se, 3)})"
+          "Slope gate skipped (slope_gate = FALSE): pooled OOF all = {round(slope_all_after, 3)}, q4close = {round(slope_q4close_after, 3)} (n = {q4c_detail$n}, SE = {round(q4c_detail$se, 3)})"
         )
       }
+
+      # ---- Shipped artifact (\enc{§}{Section}8 point 4): refit (a, b, c) on the FULL
+      # gate season (both folds, deduped convention) -- the pooled OOF
+      # slopes above are what the gate actually verified; this is "more
+      # data, same recipe" now that the gate has passed (or been
+      # overridden), not a second measurement.
+      calib <- fit_wp_calibration_deduped(temporal$preds, temporal$labels, temporal$meta_cols,
+                                          form = "leverage_interaction_v1")
+      cli::cli_inform("Full gate-season refit (shipped): a = {round(calib$a, 4)}, b = {round(calib$b, 4)}, c = {round(calib$c, 4)}")
 
       # Cell-boundary discontinuity -- N/A for the leverage form by
       # construction: w is continuous in both match-time and margin (no
@@ -1090,11 +1203,13 @@ train_core_models <- function(models = c("ep", "wp", "shot"),
         "[report-only, not gated] Cell-boundary discontinuity: N/A for leverage_interaction_v1 (continuous weight, no boundary by construction)"
       )
 
-      # Gate-cell sample-size + reliability diagnostics, BOTH halves --
-      # lets the log answer "stable estimate or thin-cell noise?" (the cell
-      # is ~1 season and halved, so n visibility is essential).
-      wp_gate_cell_diagnostics(cal_fit_leverage, temporal$labels[fit_idx], fit_meta, label = "fit half")
-      wp_gate_cell_diagnostics(calibrated_gate, temporal$labels[gate_idx], gate_meta, label = "gate half")
+      # Gate-cell sample-size + reliability diagnostics -- lets the log
+      # answer "stable estimate or thin-cell noise?" on both the pooled OOF
+      # set the gate measured and the full-season refit that ships.
+      wp_gate_cell_diagnostics(cf_leverage$oof_preds, cf_leverage$oof_labels, cf_leverage$oof_meta, label = "pooled OOF (gate)")
+      w_shipped <- wp_leverage_weight(temporal$meta_cols$est_match_remaining / 60, temporal$meta_cols$points_diff)
+      calibrated_full <- apply_wp_calibration(temporal$preds, calib, w = w_shipped)
+      wp_gate_cell_diagnostics(calibrated_full, temporal$labels, temporal$meta_cols, label = "full refit (shipped)")
 
       calib_formula <- "plogis(a + (b + c*w)*qlogis(p)), w = leverage_weight(minutes_remaining, points_diff; ramp_mins, margin_cap)"
       wp_calibration_obj <- list(
@@ -1103,10 +1218,12 @@ train_core_models <- function(models = c("ep", "wp", "shot"),
         ramp_mins = 20, margin_cap = 18,
         cell = list(period = 4, margin_abs_max = 12),
         formula = calib_formula,
-        fitted_on = "temporal-oos-fit-half", gate_season = gate_season,
-        n_fit = length(fit_idx),
-        n_fit_half_matches = n_fit_half_matches,
-        n_gate_half_matches = n_gate_half_matches,
+        fitted_on = "temporal-oos-full-gate-season-refit",
+        gate_validated_on = "temporal-oos-cross-fit-pooled-oof",
+        gate_season = gate_season,
+        n_fit = nrow(temporal$meta_cols),
+        n_foldA_matches = n_foldA_matches,
+        n_foldB_matches = n_foldB_matches,
         slope_before = slope_all_before, slope_after = slope_all_after,
         slope_q4close_before = slope_q4close_before, slope_q4close_after = slope_q4close_after,
         slope_all_global = slope_all_global, slope_q4close_global = slope_q4close_global,
@@ -1115,19 +1232,17 @@ train_core_models <- function(models = c("ep", "wp", "shot"),
       wp_calibration_meta <- torpmodels:::build_model_meta(
         "wp_calibration", seasons, list(formula = calib_formula, form = calib$form),
         c("a", "b", "c"),
-        n_rows = length(fit_idx),
+        n_rows = nrow(temporal$meta_cols),
         extra = list(
           script = "train_models.R",
           a = calib$a, b = calib$b, c = calib$c,
           form = calib$form, ramp_mins = 20, margin_cap = 18,
-          gate_season = gate_season, n_fit = length(fit_idx),
-          n_fit_half_matches = n_fit_half_matches,
-          n_gate_half_matches = n_gate_half_matches,
+          gate_season = gate_season, n_fit = nrow(temporal$meta_cols),
+          n_foldA_matches = n_foldA_matches,
+          n_foldB_matches = n_foldB_matches,
           slope_before = slope_all_before, slope_after = slope_all_after,
           slope_q4close_before = slope_q4close_before, slope_q4close_after = slope_q4close_after,
           slope_all_global = slope_all_global, slope_q4close_global = slope_q4close_global,
-          slope_q4close_fithalf_global = slope_q4close_fithalf_global,
-          slope_q4close_fithalf_leverage = slope_q4close_fithalf_leverage,
           max_boundary_jump = bj$max_jump
         )
       )
