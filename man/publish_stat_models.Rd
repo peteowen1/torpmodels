@@ -9,7 +9,9 @@ publish_stat_models(
   dir,
   repo = get_torpmodels_repo(),
   tag = "stat-models",
-  update_manifest = TRUE
+  update_manifest = TRUE,
+  gate = TRUE,
+  gate_max_regression = 0.2
 )
 }
 \arguments{
@@ -23,6 +25,14 @@ publish_stat_models(
 
 \item{update_manifest}{Logical. If \code{TRUE} (default), call
 \code{\link[=update_models_manifest]{update_models_manifest()}} after upload.}
+
+\item{gate}{Logical. If \code{TRUE} (default), skip publishing any file whose
+\code{cv_metric} regressed by more than \code{gate_max_regression} vs the
+previously published version. Set \code{FALSE} to disable (e.g. a
+deliberate re-baseline after a feature/formula change).}
+
+\item{gate_max_regression}{Numeric, default \code{0.20}. Maximum tolerated
+relative RMSE increase (new/old - 1) before a file is gated.}
 }
 \value{
 Character vector of successfully uploaded file names, invisibly.
@@ -35,4 +45,18 @@ one bad upload shouldn't block the other ~57. Continues past individual
 upload failures, collects them into a single warning, and records every
 successfully uploaded file in \code{models_manifest.json} via
 \code{\link[=update_models_manifest]{update_models_manifest()}}.
+}
+\details{
+Quality-gated by default: each file's freshly-stamped \code{cv_metric} (a
+temporal-holdout RMSE -- lower is better) is compared against the
+PREVIOUSLY published version's \code{cv_metric} for that same file, read from
+the existing manifest. Unlike the WP/match-margin gates (an absolute
+threshold against a fixed calibration target of 1.0), RMSE has no
+meaningful absolute target -- it's scale-dependent per stat (a goals
+model and a disposals model have unrelated "good" RMSE values) -- so this
+gates on RELATIVE regression vs each stat's own history instead. A file
+with no prior manifest entry (first-ever publish) always passes -- there
+is nothing to regress against. A gated file is skipped (old version stays
+live) with a loud warning, same "continue past one bad file" philosophy
+as upload failures.
 }
