@@ -54,6 +54,85 @@ test_that("update_models_manifest treats 404 as fresh and aborts on transient er
   )
 })
 
+test_that("publish_stat_models uploads all present files and updates the manifest", {
+  dir <- withr::local_tempdir()
+  saveRDS(1, file.path(dir, "goals.rds"))
+  saveRDS(2, file.path(dir, "disposals.rds"))
+
+  upload_calls <- character(0)
+  testthat::local_mocked_bindings(
+    pb_upload = function(file, repo, tag, name = basename(file), ...) {
+      upload_calls <<- c(upload_calls, basename(file))
+    },
+    .package = "piggyback"
+  )
+  manifest_calls <- 0L
+  testthat::local_mocked_bindings(
+    update_models_manifest = function(files, dir, repo, tag) {
+      manifest_calls <<- manifest_calls + 1L
+      expect_setequal(files, c("goals.rds", "disposals.rds"))
+      invisible(NULL)
+    }
+  )
+
+  uploaded <- publish_stat_models(c("goals.rds", "disposals.rds"), dir)
+  expect_setequal(uploaded, c("goals.rds", "disposals.rds"))
+  expect_setequal(upload_calls, c("goals.rds", "disposals.rds"))
+  expect_identical(manifest_calls, 1L)
+})
+
+test_that("publish_stat_models continues past an individual upload failure -- not all-or-nothing like publish_model_group", {
+  dir <- withr::local_tempdir()
+  saveRDS(1, file.path(dir, "goals.rds"))
+  saveRDS(2, file.path(dir, "disposals.rds"))
+
+  testthat::local_mocked_bindings(
+    pb_upload = function(file, repo, tag, name = basename(file), ...) {
+      if (basename(file) == "goals.rds") stop("simulated upload failure")
+      invisible(NULL)
+    },
+    .package = "piggyback"
+  )
+  manifest_files <- NULL
+  testthat::local_mocked_bindings(
+    update_models_manifest = function(files, dir, repo, tag) {
+      manifest_files <<- files
+      invisible(NULL)
+    }
+  )
+
+  expect_warning(
+    uploaded <- publish_stat_models(c("goals.rds", "disposals.rds"), dir),
+    "goals.rds"
+  )
+  expect_identical(uploaded, "disposals.rds")
+  expect_identical(manifest_files, "disposals.rds")  # only the successful upload gets tracked
+})
+
+test_that("publish_stat_models warns and skips missing files rather than aborting the whole batch", {
+  dir <- withr::local_tempdir()
+  saveRDS(1, file.path(dir, "goals.rds"))
+
+  testthat::local_mocked_bindings(
+    pb_upload = function(...) invisible(NULL),
+    .package = "piggyback"
+  )
+  testthat::local_mocked_bindings(
+    update_models_manifest = function(files, dir, repo, tag) invisible(NULL)
+  )
+
+  expect_warning(
+    uploaded <- publish_stat_models(c("goals.rds", "missing_stat.rds"), dir),
+    "missing_stat.rds"
+  )
+  expect_identical(uploaded, "goals.rds")
+})
+
+test_that("publish_stat_models aborts only when NONE of the requested files exist", {
+  dir <- withr::local_tempdir()
+  expect_error(publish_stat_models("nope.rds", dir), "none of")
+})
+
 test_that("manifest write moves prior entry to history and records sha256", {
   dir <- withr::local_tempdir()
   saveRDS(

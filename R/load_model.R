@@ -112,9 +112,11 @@ get_models_dir <- function() {
 # read-only cache-freshness check, that would wrongly hard-fail a load that
 # could otherwise succeed from a perfectly good local cache, so the abort is
 # caught and degraded to "couldn't verify this session" instead. A tag with
-# no manifest at all (stat-models, as of this writing) keeps exactly the
-# pre-M3 existence-only cache behaviour, plus one cli_warn for the whole
-# session -- never a hard failure.
+# no manifest at all (stat-models had none until 2026-07-26, when
+# publish_stat_models() started writing one -- see R/publish.R) keeps
+# exactly the pre-M3 existence-only cache behaviour, plus one cli_warn for
+# the whole session -- never a hard failure. Any future manifest-less tag
+# gets the same graceful degradation.
 
 #' @noRd
 .tm_manifest_state <- new.env(parent = emptyenv())
@@ -303,7 +305,7 @@ load_stat_model <- function(stat_name, force_download = FALSE, verbose = TRUE) {
       if (verbose) {
         cli::cli_inform("Loading stat model '{stat_name}' from local cache")
       }
-      return(safe_read_rds(local_path, stat_name))
+      return(.load_with_provenance(local_path, stat_name, verbose))
     }
     if (verbose) {
       cli::cli_inform("Cached stat model '{stat_name}' does not match models_manifest.json -- re-downloading")
@@ -323,7 +325,7 @@ load_stat_model <- function(stat_name, force_download = FALSE, verbose = TRUE) {
   if (inherits(dl_result, "error")) {
     if (had_cache && !isTRUE(force_download)) {
       cli::cli_warn("Download of stat model '{stat_name}' failed ({conditionMessage(dl_result)}) -- serving existing local cache instead")
-      return(safe_read_rds(local_path, stat_name))
+      return(.load_with_provenance(local_path, stat_name, verbose))
     }
     stop(dl_result)
   }
@@ -332,7 +334,7 @@ load_stat_model <- function(stat_name, force_download = FALSE, verbose = TRUE) {
     cli::cli_abort("Failed to download stat model: {stat_name}")
   }
 
-  return(safe_read_rds(local_path, stat_name))
+  return(.load_with_provenance(local_path, stat_name, verbose))
 }
 
 #' List Available Models
@@ -520,8 +522,9 @@ safe_read_rds <- function(path, label = basename(path)) {
 #'
 #' Verifies sha256 against `models_manifest.json` when the tag's manifest
 #' tracks this file -- replacing the old `file.size > 1000` heuristic, which
-#' is now only a last-resort fallback for tags with no manifest yet (e.g.
-#' stat-models, as of this writing). Each download attempt lands in a
+#' is now only a last-resort fallback for tags with no manifest yet (any
+#' asset published outside `publish_model_group()`/`publish_stat_models()`
+#' -- stat-models had none until 2026-07-26). Each download attempt lands in a
 #' tempdir beside the destination and is moved into place atomically via
 #' `vb_atomic_write()`, with a `<local_path>.sha256` sidecar written
 #' alongside on success. Three retry layers, innermost first: (1) the raw

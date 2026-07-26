@@ -107,6 +107,77 @@ publish_model_group <- function(group, dir, repo = get_torpmodels_repo(),
   invisible(uploaded)
 }
 
+#' Publish stat models to a GitHub release
+#'
+#' Unlike [publish_model_group()]'s fixed-group atomicity (built for
+#' sidecar-pair artifacts like wp_model+wp_calibration, where a partial
+#' upload is worse than none), the 58 per-stat GAMs are independent files --
+#' one bad upload shouldn't block the other ~57. Continues past individual
+#' upload failures, collects them into a single warning, and records every
+#' successfully uploaded file in `models_manifest.json` via
+#' [update_models_manifest()].
+#'
+#' @param files Character vector of file names (relative to `dir`) to publish.
+#' @param dir Character. Directory containing the model files.
+#' @param repo Character. `"owner/repo"`. Defaults to [get_torpmodels_repo()].
+#' @param tag Character. Release tag, defaults to `"stat-models"`.
+#' @param update_manifest Logical. If `TRUE` (default), call
+#'   [update_models_manifest()] after upload.
+#'
+#' @return Character vector of successfully uploaded file names, invisibly.
+#' @export
+publish_stat_models <- function(files, dir, repo = get_torpmodels_repo(),
+                                tag = "stat-models", update_manifest = TRUE) {
+  present <- file.exists(file.path(dir, files))
+  if (!any(present)) {
+    cli::cli_abort("publish_stat_models: none of the {length(files)} requested files exist in {dir}")
+  }
+  if (!all(present)) {
+    cli::cli_warn("publish_stat_models: {sum(!present)} file(s) missing from {dir}, skipping: {paste(files[!present], collapse = ', ')}")
+  }
+  files <- files[present]
+
+  Sys.setenv(piggyback_cache_duration = 1)
+
+  uploaded <- character(0)
+  failed <- character(0)
+
+  for (f in files) {
+    path <- file.path(dir, f)
+    ok <- tryCatch({
+      piggyback::pb_upload(path, repo = repo, tag = tag)
+      TRUE
+    }, error = function(e) {
+      cli::cli_warn("publish_stat_models: upload failed for {.val {f}}: {conditionMessage(e)}")
+      FALSE
+    })
+    if (isTRUE(ok)) uploaded <- c(uploaded, f) else failed <- c(failed, f)
+  }
+
+  if (length(failed) > 0) {
+    cli::cli_warn(c(
+      "publish_stat_models: {length(failed)}/{length(files)} uploads failed: {paste(failed, collapse = ', ')}",
+      "i" = "Uploaded {length(uploaded)} successfully -- re-run publish_stat_models() with just the failed file names to retry (piggyback uploads are idempotent per file)."
+    ))
+  }
+
+  if (update_manifest && length(uploaded) > 0) {
+    manifest_result <- tryCatch(update_models_manifest(uploaded, dir, repo, tag), error = function(e) e)
+    if (inherits(manifest_result, "error")) {
+      Sys.sleep(5)
+      manifest_result <- tryCatch(update_models_manifest(uploaded, dir, repo, tag), error = function(e) e)
+      if (inherits(manifest_result, "error")) {
+        cli::cli_warn(c(
+          "publish_stat_models: assets uploaded successfully, but models_manifest.json update failed twice: {conditionMessage(manifest_result)}",
+          "i" = "{paste(uploaded, collapse = ', ')} are live but untracked -- re-run {.fn update_models_manifest} for these once the transient issue clears."
+        ))
+      }
+    }
+  }
+
+  invisible(uploaded)
+}
+
 #' @noRd
 .manifest_asset_name <- "models_manifest.json"
 
