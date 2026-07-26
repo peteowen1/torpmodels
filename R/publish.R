@@ -107,6 +107,132 @@ publish_model_group <- function(group, dir, repo = get_torpmodels_repo(),
   invisible(uploaded)
 }
 
+#' Publish stat models to a GitHub release
+#'
+#' Unlike [publish_model_group()]'s fixed-group atomicity (built for
+#' sidecar-pair artifacts like wp_model+wp_calibration, where a partial
+#' upload is worse than none), the 58 per-stat GAMs are independent files --
+#' one bad upload shouldn't block the other ~57. Continues past individual
+#' upload failures, collects them into a single warning, and records every
+#' successfully uploaded file in `models_manifest.json` via
+#' [update_models_manifest()].
+#'
+#' Quality-gated by default: each file's freshly-stamped `cv_metric` (a
+#' temporal-holdout RMSE -- lower is better) is compared against the
+#' PREVIOUSLY published version's `cv_metric` for that same file, read from
+#' the existing manifest. Unlike the WP/match-margin gates (an absolute
+#' threshold against a fixed calibration target of 1.0), RMSE has no
+#' meaningful absolute target -- it's scale-dependent per stat (a goals
+#' model and a disposals model have unrelated "good" RMSE values) -- so this
+#' gates on RELATIVE regression vs each stat's own history instead. A file
+#' with no prior manifest entry (first-ever publish) always passes -- there
+#' is nothing to regress against. A gated file is skipped (old version stays
+#' live) with a loud warning, same "continue past one bad file" philosophy
+#' as upload failures.
+#'
+#' @param files Character vector of file names (relative to `dir`) to publish.
+#' @param dir Character. Directory containing the model files.
+#' @param repo Character. `"owner/repo"`. Defaults to [get_torpmodels_repo()].
+#' @param tag Character. Release tag, defaults to `"stat-models"`.
+#' @param update_manifest Logical. If `TRUE` (default), call
+#'   [update_models_manifest()] after upload.
+#' @param gate Logical. If `TRUE` (default), skip publishing any file whose
+#'   `cv_metric` regressed by more than `gate_max_regression` vs the
+#'   previously published version. Set `FALSE` to disable (e.g. a
+#'   deliberate re-baseline after a feature/formula change).
+#' @param gate_max_regression Numeric, default `0.20`. Maximum tolerated
+#'   relative RMSE increase (new/old - 1) before a file is gated.
+#'
+#' @return Character vector of successfully uploaded file names, invisibly.
+#' @export
+publish_stat_models <- function(files, dir, repo = get_torpmodels_repo(),
+                                tag = "stat-models", update_manifest = TRUE,
+                                gate = TRUE, gate_max_regression = 0.20) {
+  present <- file.exists(file.path(dir, files))
+  if (!any(present)) {
+    cli::cli_abort("publish_stat_models: none of the {length(files)} requested files exist in {dir}")
+  }
+  if (!all(present)) {
+    cli::cli_warn("publish_stat_models: {sum(!present)} file(s) missing from {dir}, skipping: {paste(files[!present], collapse = ', ')}")
+  }
+  files <- files[present]
+
+  # Tracked outside the `if (isTRUE(gate))` block (not just declared inside
+  # it) so it's always defined for the attr() on the final return, even when
+  # gate = FALSE.
+  gated <- character(0)
+  if (isTRUE(gate)) {
+    prev_manifest <- tryCatch(.fetch_manifest(repo, tag), error = function(e) NULL)
+    for (f in files) {
+      prev_metric <- prev_manifest$artifacts[[f]]$cv_metric
+      if (is.null(prev_metric) || is.na(prev_metric)) next  # nothing to regress against
+      new_meta <- tryCatch(model_meta(readRDS(file.path(dir, f))), error = function(e) NULL)
+      new_metric <- new_meta$cv_metric
+      if (is.null(new_metric) || is.na(new_metric)) next  # can't gate without a new metric either
+      if (new_metric > prev_metric * (1 + gate_max_regression)) {
+        cli::cli_warn(c(
+          "publish_stat_models: gating {.val {f}} -- cv_metric regressed {round((new_metric / prev_metric - 1) * 100, 1)}% ({round(prev_metric, 4)} -> {round(new_metric, 4)}), exceeds {gate_max_regression * 100}% tolerance",
+          "i" = "Previously published version stays live. Re-run with gate = FALSE to force-publish anyway."
+        ))
+        gated <- c(gated, f)
+      }
+    }
+    files <- setdiff(files, gated)
+    if (length(files) == 0) {
+      cli::cli_warn("publish_stat_models: all requested files were gated -- nothing to publish")
+      empty <- character(0)
+      attr(empty, "gated") <- gated
+      return(invisible(empty))
+    }
+  }
+
+  Sys.setenv(piggyback_cache_duration = 1)
+
+  uploaded <- character(0)
+  failed <- character(0)
+
+  for (f in files) {
+    path <- file.path(dir, f)
+    ok <- tryCatch({
+      piggyback::pb_upload(path, repo = repo, tag = tag)
+      TRUE
+    }, error = function(e) {
+      cli::cli_warn("publish_stat_models: upload failed for {.val {f}}: {conditionMessage(e)}")
+      FALSE
+    })
+    if (isTRUE(ok)) uploaded <- c(uploaded, f) else failed <- c(failed, f)
+  }
+
+  if (length(failed) > 0) {
+    cli::cli_warn(c(
+      "publish_stat_models: {length(failed)}/{length(files)} uploads failed: {paste(failed, collapse = ', ')}",
+      "i" = "Uploaded {length(uploaded)} successfully -- re-run publish_stat_models() with just the failed file names to retry (piggyback uploads are idempotent per file)."
+    ))
+  }
+
+  if (update_manifest && length(uploaded) > 0) {
+    manifest_result <- tryCatch(update_models_manifest(uploaded, dir, repo, tag), error = function(e) e)
+    if (inherits(manifest_result, "error")) {
+      Sys.sleep(5)
+      manifest_result <- tryCatch(update_models_manifest(uploaded, dir, repo, tag), error = function(e) e)
+      if (inherits(manifest_result, "error")) {
+        cli::cli_warn(c(
+          "publish_stat_models: assets uploaded successfully, but models_manifest.json update failed twice: {conditionMessage(manifest_result)}",
+          "i" = "{paste(uploaded, collapse = ', ')} are live but untracked -- re-run {.fn update_models_manifest} for these once the transient issue clears."
+        ))
+      }
+    }
+  }
+
+  # Gated files are attached as an attribute (not folded into `uploaded`)
+  # so the return value's plain length stays "how many were actually
+  # published" -- a caller comparing that against its own trained-file
+  # count needs to also subtract attr(result, "gated") to avoid treating a
+  # deliberate quality-gate skip as an upload failure.
+  attr(uploaded, "gated") <- gated
+  invisible(uploaded)
+}
+
 #' @noRd
 .manifest_asset_name <- "models_manifest.json"
 
@@ -212,7 +338,13 @@ update_models_manifest <- function(files, dir, repo, tag) {
 check_manifest_sync <- function(repo = get_torpmodels_repo(), tag = "core-models") {
   manifest <- .fetch_manifest(repo, tag)
   if (is.null(manifest)) {
-    cli::cli_abort("No {.val {.manifest_asset_name}} found for {repo}@{tag} -- nothing to check.")
+    # (.manifest_asset_name) parens: cli's glue interpolation reserves a
+    # bare {.foo...} for its own inline-markup style classes, so a
+    # dot-prefixed variable name needs parens to be evaluated as an
+    # expression rather than misparsed as an unknown style and hard-error
+    # ("Invalid cli literal") -- discovered 2026-07-26 via the identical bug
+    # in wt_av_modelling.R, which crashed a real training run.
+    cli::cli_abort("No {.val {(.manifest_asset_name)}} found for {repo}@{tag} -- nothing to check.")
   }
 
   # stdout goes to a file: system2(stdout = TRUE) splits very long lines on
