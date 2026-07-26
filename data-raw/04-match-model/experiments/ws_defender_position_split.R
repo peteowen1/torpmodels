@@ -254,7 +254,13 @@ if (stage %in% c("summary", "all")) {
     .print_metrics(b$metrics, "baseline C6")
     .print_metrics(v$metrics, toupper(k))
     bt <- boot_mae_diff(v$preds, b$preds)
-    cat(sprintf("  %s - baseline  dMAE = %+.3f  95%% CI [%+.3f, %+.3f]  P(better) %.2f\n\n",
-                toupper(k), bt$mean_diff, bt$ci_lower, bt$ci_upper, bt$p_better))
+    # Field names are mae_diff / mae_ci / brier_diff / brier_ci (rolling_lib.R
+    # :610). Guessing mean_diff/ci_lower/... printed NOTHING rather than
+    # erroring: sprintf() on a NULL returns character(0) and cat() swallows it.
+    stopifnot(all(c("mae_diff", "mae_ci", "brier_diff", "brier_ci") %in% names(bt)))
+    cat(sprintf("  %s - baseline  dMAE   = %+.3f  95%% CI [%+.3f, %+.3f]  (positive = WORSE)\n",
+                toupper(k), bt$mae_diff, bt$mae_ci[1], bt$mae_ci[2]))
+    cat(sprintf("  %s - baseline  dBrier = %+.4f 95%% CI [%+.4f, %+.4f]\n\n",
+                toupper(k), bt$brier_diff, bt$brier_ci[1], bt$brier_ci[2]))
   }
 }
