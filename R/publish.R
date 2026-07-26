@@ -283,7 +283,13 @@ update_models_manifest <- function(files, dir, repo, tag) {
 check_manifest_sync <- function(repo = get_torpmodels_repo(), tag = "core-models") {
   manifest <- .fetch_manifest(repo, tag)
   if (is.null(manifest)) {
-    cli::cli_abort("No {.val {.manifest_asset_name}} found for {repo}@{tag} -- nothing to check.")
+    # (.manifest_asset_name) parens: cli's glue interpolation reserves a
+    # bare {.foo...} for its own inline-markup style classes, so a
+    # dot-prefixed variable name needs parens to be evaluated as an
+    # expression rather than misparsed as an unknown style and hard-error
+    # ("Invalid cli literal") -- discovered 2026-07-26 via the identical bug
+    # in wt_av_modelling.R, which crashed a real training run.
+    cli::cli_abort("No {.val {(.manifest_asset_name)}} found for {repo}@{tag} -- nothing to check.")
   }
 
   # stdout goes to a file: system2(stdout = TRUE) splits very long lines on
