@@ -45,7 +45,11 @@ RESULTS_DIR <- file.path(EXPERIMENTS_DIR, "results")
 source(file.path(EXPERIMENTS_DIR, "rolling_lib.R"))
 DD <- "C:/dev/torpverse/torpdata/data/"
 SEASONS <- 2021:2026
-TEST_SEASONS <- 2026
+# Override from the command line for the pooled confirm:
+#   Rscript ws_v2_feature_improve.R 2025 2026
+.args <- commandArgs(trailingOnly = TRUE)
+TEST_SEASONS <- if (length(.args)) as.integer(.args) else 2026
+cli::cli_inform("TEST_SEASONS = {paste(TEST_SEASONS, collapse=', ')}")
 BK <- c("KEY_DEFENDER","MEDIUM_DEFENDER","MIDFIELDER","RUCK","MEDIUM_FORWARD","KEY_FORWARD")
 
 r2 <- as.data.table(load_torp_ratings());              r2[, round := as.numeric(round)]
@@ -132,5 +136,5 @@ for (k in c("B","C")) {
   bd <- boot_mae_diff(res[[k]]$preds, res$A$preds, B = 2000)
   cli::cli_inform("{k} vs A: dMAE {round(bd$mae_diff,3)} [{round(bd$mae_ci[1],3)}, {round(bd$mae_ci[2],3)}] | dBrier {round(bd$brier_diff,5)} [{round(bd$brier_ci[1],5)}, {round(bd$brier_ci[2],5)}]")
 }
-saveRDS(res, .rds("ws_v2_feature_improve.rds"))
+saveRDS(res, .rds(sprintf("ws_v2_feature_improve_%s.rds", paste(TEST_SEASONS, collapse="_"))))
 cli::cli_alert_success("Saved")
