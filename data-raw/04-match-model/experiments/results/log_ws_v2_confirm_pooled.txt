@@ -1,0 +1,151 @@
+﻿Rscript : Warning messages:
+At line:1 char:344
++ ... torpmodels; Rscript "data-raw\04-match-model\experiments\ws_v2_publis ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Warning messages::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+1: package 'ggplot2' was built under R version 4.5.2 
+2: package 'tibble' was built under R version 4.5.2 
+3: package 'tidyr' was built under R version 4.5.2 
+4: package 'purrr' was built under R version 4.5.2 
+5: package 'dplyr' was built under R version 4.5.2 
+6: package 'stringr' was built under R version 4.5.2 
+7: package 'xgboost' was built under R version 4.5.3 
+8: package 'data.table' was built under R version 4.5.2 
+9: package 'arrow' was built under R version 4.5.2 
+torp 1.3.8 - AFL Analytics and Player Rating System
+Data source: https://github.com/peteowen1/torpdata
+Report issues: https://github.com/peteowen1/torp/issues
+No skip markers to clear.
+TEST_SEASONS = 2025, 2026
+
+── Reading published ratings (no rebuild) ──────────────────────────────────────
+v2 (canonical): 130928 rows | v1 (preserved): 130928 rows
+v1: 2464 team-match rows aggregated
+v2: 2464 team-match rows aggregated
+
+── Validating published-v1 aggregation against cached C6 features ──────────────
+matched rows: 2240 of 2314 (1466 pre-2025 used for validation)
+cor(published-v1 EPR, cached EPR) = 0.9978 [pre-test seasons]
+cor(published-v1 PSR, cached PSR) = 0.9971 [pre-test seasons]
+2026 (stale cache, excluded): EPR r = 0.9124
+✔ Aggregation validated on settled seasons
+arm v1 (published): 2240 of 2314 rows re-rated
+arm v2 (published): 2240 of 2314 rows re-rated
+
+── PUBLISHED v1 ────────────────────────────────────────────────────────────────
+XGBoost training on 1466 rows
+✔ XGBoost pipeline trained (37/54/14/63/87 rounds)
+elapsed 6.39 min
+$logloss
+[1] 0.5234398
+
+$accuracy
+[1] 73.80952
+
+$brier
+[1] 0.1745724
+
+$bits
+[1] 0.244836
+
+$mae
+[1] 25.51833
+
+$rmse
+[1] 32.1773
+
+$slope
+[1] 0.9311529
+
+$intercept
+[1] 0.8323587
+
+$cor
+[1] 0.6191115
+
+$sd_pred
+[1] 27.23086
+
+$sd_actual
+[1] 40.95561
+
+$sd_ratio
+[1] 0.6648871
+
+$close_n
+[1] 112
+
+$close_mae
+[1] 17.00165
+
+There were 49 warnings (use warnings() to see them)
+
+── PUBLISHED v2 ────────────────────────────────────────────────────────────────
+XGBoost training on 1466 rows
+✔ XGBoost pipeline trained (27/72/13/105/79 rounds)
+elapsed 5.12 min
+$logloss
+[1] 0.5274677
+
+$accuracy
+[1] 73.28042
+
+$brier
+[1] 0.1770497
+
+$bits
+[1] 0.239025
+
+$mae
+[1] 25.63367
+
+$rmse
+[1] 32.30124
+
+$slope
+[1] 0.8810436
+
+$intercept
+[1] 0.7765717
+
+$cor
+[1] 0.6191185
+
+$sd_pred
+[1] 28.77994
+
+$sd_actual
+[1] 40.95561
+
+$sd_ratio
+[1] 0.7027105
+
+$close_n
+[1] 112
+
+$close_mae
+[1] 18.15875
+
+There were 49 warnings (use warnings() to see them)
+
+── PAIRED BOOTSTRAP: published v2 vs published v1 ──────────────────────────────
+$n_matches
+[1] 378
+
+$mae_diff
+[1] 0.1153405
+
+$mae_ci
+      2.5%      97.5% 
+-0.3369718  0.5257864 
+
+$brier_diff
+[1] 0.002477318
+
+$brier_ci
+        2.5%        97.5% 
+-0.001062556  0.006002338 
+
+✔ Saved ws_v2_published_gate.rds

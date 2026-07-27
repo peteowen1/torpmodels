@@ -29,7 +29,12 @@ RESULTS_DIR <- file.path(EXPERIMENTS_DIR, "results")
 source(file.path(EXPERIMENTS_DIR, "rolling_lib.R"))
 DD <- "C:/dev/torpverse/torpdata/data/"
 SEASONS <- 2021:2026
-TEST_SEASONS <- 2026
+# 2026 alone is the SCREEN; pooled 2025:2026 is the CONFIRM step the §1.1
+# protocol asks for (FABLE-MATCH-MAE-PLAN G6). Override from the command line:
+#   Rscript ws_v2_published_gate.R 2025 2026
+.args <- commandArgs(trailingOnly = TRUE)
+TEST_SEASONS <- if (length(.args)) as.integer(.args) else 2026
+cli::cli_inform("TEST_SEASONS = {paste(TEST_SEASONS, collapse=', ')}")
 
 # ---- 1. read both published vintages ---------------------------------------
 cli::cli_h1("Reading published ratings (no rebuild)")
@@ -126,5 +131,5 @@ cli::cli_h1("PAIRED BOOTSTRAP: published v2 vs published v1")
 bd <- boot_mae_diff(res2$preds, res1$preds, B = 2000)
 print(bd)
 saveRDS(list(v1 = res1, v2 = res2, boot = bd, r_epr = r_epr, r_psr = r_psr),
-        .rds("ws_v2_published_gate.rds"))
+        .rds(sprintf("ws_v2_published_gate_%s.rds", paste(TEST_SEASONS, collapse="_"))))
 cli::cli_alert_success("Saved ws_v2_published_gate.rds")
