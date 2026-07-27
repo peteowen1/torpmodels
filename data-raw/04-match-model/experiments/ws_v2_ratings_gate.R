@@ -63,6 +63,32 @@ for (ch in CH) {
        (get(p80) - .m) * pmin(S/pmax(.s,1e-6),1e9) * tog_safe else (get(p80) - .m) * tog_safe]
   pg[, c(".m",".s") := NULL]
 }
+# Opponent adjustment. Production's calculate_epr_stats() PREFERS the _oadj
+# columns and only falls back to _adj (player_ratings.R:266-277), so a rebuild
+# that stops at the position adjustment is reconstructing a different quantity
+# than production computes -- which is exactly why the first run of this gate
+# validated EPR at only r = 0.950. Applied per vintage, since the adjustment is
+# computed FROM the position-adjusted values and therefore differs between them.
+for (v in c("v1","v2")) {
+  tmp <- copy(pg)
+  tmp[, `:=`(epv_recv_adj   = get(paste0(v,"_recv")),
+             epv_disp_adj   = get(paste0(v,"_disp")),
+             epv_spoil_adj  = get(paste0(v,"_spoil")),
+             epv_hitout_adj = get(paste0(v,"_hitout")))]
+  tmp[, epv_adj := epv_recv_adj + epv_disp_adj + epv_spoil_adj + epv_hitout_adj]
+  tmp <- data.table::as.data.table(adjust_epv_for_opponents(tmp))
+  keep <- tmp[, .(player_id, match_id,
+                  o_recv = epv_recv_oadj, o_disp = epv_disp_oadj,
+                  o_spoil = epv_spoil_oadj, o_hitout = epv_hitout_oadj)]
+  pg <- merge(pg, keep, by = c("player_id","match_id"), all.x = TRUE)
+  for (ch in CH) {
+    src <- paste0("o_", ch); dst <- paste0(v, "_", ch)
+    pg[!is.na(get(src)), (dst) := get(src)]
+  }
+  pg[, c("o_recv","o_disp","o_spoil","o_hitout") := NULL]
+  cli::cli_inform("{v}: opponent adjustment applied")
+}
+
 setorder(pg, player_id, utc_start_time); pg[, .date := as.Date(utc_start_time)]
 # accumulates BEFORE adding the current game, so each row carries the player's
 # PRE-MATCH rating -- which is what a predictive feature must use
