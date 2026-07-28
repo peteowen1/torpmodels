@@ -33,6 +33,19 @@ TEST_SEASONS <- 2025:2026
 DF  <- file.path(RES, "fixed_team_mdl_df.rds")
 PR  <- file.path(RES, "fixed_roll_pooled.rds")
 
+# Read the RELEASE, never the local mirror.
+#
+# The first run of this script aborted on its own sanity gate, reporting 2022
+# still collapsing at ratio 0.448 -- because load_torp_ratings() had served the
+# local torpdata/data copy, which predates the CI regenerate that fixed it. The
+# very trap under investigation, biting the script verifying the fix.
+#
+# NA is the explicit disable (get_local_data_dir()); pointing the option at a
+# non-existent path does NOT work, it falls through to the sibling auto-detect.
+options(torp.local_data_dir = NA)
+stopifnot(is.null(get_local_data_dir()))
+cli::cli_alert_info("Local data dir disabled -- reading releases directly")
+
 # --- sanity gate: refuse to run on still-corrupted ratings --------------------
 cli::cli_h1("Checking the published ratings are actually fixed")
 tr <- as.data.table(load_torp_ratings())
