@@ -36,8 +36,8 @@ source(file.path(EXP, "scorecard_lib.R"))
 
 RATING_SEASONS <- 2021:2026
 TEST_SEASONS   <- 2025:2026
-CACHE      <- file.path(EXP, "results", "ws10_arms_cache.rds")
-EVAL_CACHE <- file.path(EXP, "results", "ws10_eval_cache.rds")
+CACHE      <- file.path(EXP, "results", "ws10b_arms_cache.rds")
+EVAL_CACHE <- file.path(EXP, "results", "ws10b_eval_cache.rds")
 OUT        <- file.path(EXP, "results", "ws10_value_rating_split.rds")
 t_start <- Sys.time()
 
@@ -52,17 +52,28 @@ set_flags <- function(v) {
 BASE <- list(ROLE_USE_LINEUP_GROUP = FALSE, PSV_ROLE_CENTRE_BY_ROUND = FALSE,
              EPR_POSITION_SHRINK = FALSE, EPV_LEVEL_CENTRE = TRUE)
 
+# REACHABILITY (found 2026-07-29 by the identical-arms guard, which is the only
+# reason this is not silently reported as "no effect"):
+#
+# This harness starts from RELEASED player_game_data, which already carries the
+# epv_*_adj columns. The role adjustment (.position_adjust(), and PSV's role
+# stage) runs during pgd CONSTRUCTION in add_player_credit() -- upstream of
+# build_ratings_history(). So ROLE_USE_LINEUP_GROUP and PSV_ROLE_CENTRE_BY_ROUND
+# CANNOT be scored here; they need a pgd rebuild from play-by-play.
+#
+# What IS reachable, and it is the core of the design: whether the STABLE-label
+# correction belongs on the value layer (EPV_LEVEL_CENTRE, production) or on the
+# rating layer as a shrunk adjustment (EPR_POSITION_SHRINK).
 ARMS <- list(
-  production    = BASE,
-  # value layer: merge the arbitrary left/right mirrors
-  mirrors       = modifyList(BASE, list(ROLE_USE_LINEUP_GROUP = TRUE)),
-  # rating layer: shrink the correction instead of applying it in full
-  shrunk        = modifyList(BASE, list(EPR_POSITION_SHRINK = TRUE)),
-  # the full design: value layer does the role job, rating layer does the
-  # stable job (shrunk), and EPV stops doing the stable job as well
-  split         = modifyList(BASE, list(ROLE_USE_LINEUP_GROUP = TRUE,
-                                        EPV_LEVEL_CENTRE = FALSE,
-                                        EPR_POSITION_SHRINK = TRUE))
+  production   = BASE,
+  # rating layer shrinks instead of correcting in full, value layer unchanged
+  shrunk       = modifyList(BASE, list(EPR_POSITION_SHRINK = TRUE)),
+  # stable-label correction comes OFF the value layer entirely
+  no_epv_level = modifyList(BASE, list(EPV_LEVEL_CENTRE = FALSE)),
+  # the design: value layer does the role job only, rating layer does the
+  # stable job and does it shrunk
+  split        = modifyList(BASE, list(EPV_LEVEL_CENTRE = FALSE,
+                                       EPR_POSITION_SHRINK = TRUE))
 )
 
 if (file.exists(CACHE)) {
