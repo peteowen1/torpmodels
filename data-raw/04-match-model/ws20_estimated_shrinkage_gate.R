@@ -16,12 +16,32 @@
 # whether v3 ever ships. Splitting prior_games from decay isolates which of the
 # two corrections does the work.
 #
-# PERFORMANCE REVIEW (per Pete's standing instruction). Cost is dominated by
-# three production rating rebuilds at ~12 min each, and that is deliberate: the
-# fast path exists for an optimiser's inner loop, but a GATE must run the real
-# .build_epr_season() or it is not testing what would ship. The v2 baseline
-# ratings are reused from cache. Nothing quadratic; nothing else worth
-# shortcutting.
+# PERFORMANCE REVIEW -- MEASURED, after two wrong guesses.
+# epv3_profile_ratings_build.R instruments the whole thing:
+#
+#   calculate_epr_stats_batch    26.6s   93.4%  of a season
+#   per-round loop (29 calls)     1.7s    6.0%
+#   load_player_details           0.2s    0.7%
+#   => a full 6-season rebuild is ~3 MINUTES, not the 12 I asserted.
+#
+# So the rating builds were never the cost. The ROLLING EVAL is, at ~20 min per
+# arm -- 50 test rounds x (5 GAMs + XGBoost), which is inherent. xgb_nrounds CV
+# already runs once per eval rather than per round, so there is no win there.
+#
+# The only 3x lever is run_rolling_eval_parallel(), which is flagged NOT
+# ship-gate-safe (xgboost thread nondeterminism), and this is effectively a ship
+# gate for production constants. Swapping the proven fast path into the batch
+# stage would save ~6 min of ~90 and is not worth any fidelity risk.
+#
+# So the optimisation is SCOPE, not speed: three arms instead of four. The v3
+# arm is dropped -- v3's story is already known and it is not the shippable
+# question. Rating builds are cached so a re-run is eval-only.
+#
+# And the unavoidable cost buys something: the fresh v2-production arm is
+# compared against ws17's stored v2 predictions, which quantifies the harness's
+# run-to-run noise. If that noise is comparable to the 0.184 MAE effects being
+# chased, every comparison made today needs re-reading -- and nobody has
+# measured it.
 #
 # Run detached: Start-Process Rscript -ArgumentList '"<this file>"'
 
@@ -114,15 +134,27 @@ run_arm <- function(label, torp_df) {
   p[, arm := label]; p
 }
 
+cached_build <- function(tag, pgd_file, label, epr_params) {
+  f <- file.path(OUT_DIR, paste0("epv3_ratings_", tag, ".parquet"))
+  if (file.exists(f)) {
+    cli::cli_alert_info("Reusing cached {tag} ratings")
+    return(as.data.table(arrow::read_parquet(f)))
+  }
+  r <- build_ratings(pgd_file, label, epr_params)
+  arrow::write_parquet(r, f)
+  r
+}
+
+# Three arms, not four. The v3 arm is dropped: v3's story is known and it is not
+# the shippable question. Scope is the only safe lever -- see the performance
+# note at the top.
 arms <- list()
 arms[["v2 production"]] <- as.data.table(arrow::read_parquet(
   file.path(OUT_DIR, "epv3_ratings_v2.parquet")))
-arms[["v2 + est prior_games"]] <- build_ratings(
-  "epv3_player_game_v2.parquet", "v2 pg", pset("v2", TRUE, FALSE))
-arms[["v2 + est pg + decay"]] <- build_ratings(
-  "epv3_player_game_v2.parquet", "v2 pg+decay", pset("v2", TRUE, TRUE))
-arms[["v3 + est pg + decay"]] <- build_ratings(
-  "epv3_player_game_v3.parquet", "v3 pg+decay", pset("v3", TRUE, TRUE))
+arms[["v2 + est prior_games"]] <- cached_build(
+  "v2_pg", "epv3_player_game_v2.parquet", "v2 pg", pset("v2", TRUE, FALSE))
+arms[["v2 + est pg + decay"]] <- cached_build(
+  "v2_pgdecay", "epv3_player_game_v2.parquet", "v2 pg+decay", pset("v2", TRUE, TRUE))
 
 say("")
 say("--- ARMS GUARD ---")
@@ -175,6 +207,37 @@ for (nm in setdiff(names(arms), "v2 production")) {
 say("")
 say("The v2 arms are the shippable question: production's prior_games = 3.0")
 say("against a measured 7.8-12.2. If those arms win, it ships regardless of v3.")
+
+# ---- Harness run-to-run noise, harvested from a cost we cannot avoid --------
+# The v2-production arm was already evaluated by ws17 on identical ratings,
+# seasons and trainers. Any difference between that run and this one is pure
+# harness nondeterminism (xgboost threading). Nobody has quantified it, and it
+# matters: if the noise floor is comparable to the 0.184 MAE effects being
+# chased, every comparison made today needs re-reading.
+old <- tryCatch(as.data.table(arrow::read_parquet(
+  file.path(OUT_DIR, "epv3_match_preds.parquet"))), error = function(e) NULL)
+if (!is.null(old) && "arm" %in% names(old) && any(old$arm == "v2")) {
+  o <- unique(old[arm == "v2"], by = "match_id")[, .(match_id, pm_old = pred_margin,
+                                                     pw_old = pred_win)]
+  n <- preds[arm == "v2 production", .(match_id, pm_new = pred_margin,
+                                       pw_new = pred_win, margin)]
+  cm <- merge(o, n, by = "match_id")
+  say("")
+  say("=== HARNESS NOISE FLOOR (same arm, two independent runs) ===")
+  say("matches compared: ", nrow(cm))
+  say("mean |pred_margin difference| : ", round(mean(abs(cm$pm_new - cm$pm_old)), 4))
+  say("max  |pred_margin difference| : ", round(max(abs(cm$pm_new - cm$pm_old)), 4))
+  mae_o <- mean(abs(cm$pm_old - cm$margin)); mae_n <- mean(abs(cm$pm_new - cm$margin))
+  say("MAE run 1 (ws17) ", round(mae_o, 4), " | MAE run 2 (here) ", round(mae_n, 4),
+      " | difference ", round(mae_n - mae_o, 4))
+  say("")
+  say("Read that last number against the effects this session has been weighing:")
+  say("v3 vs v2 was +0.184 MAE, and 3-vs-4 channels was +0.0057. If the noise")
+  say("floor is of that order, those comparisons are not resolvable by one run.")
+} else {
+  say("")
+  say("(ws17 predictions unavailable -- harness noise not quantified this run.)")
+}
 
 arrow::write_parquet(preds, file.path(OUT_DIR, "epv3_shrinkage_gate_preds.parquet"))
 close(con)
