@@ -188,22 +188,25 @@ run_arm <- function(label, torp_df) {
   ft <- grep("^(epr|psr|torp|elo|xelo).*_diff$|^(epr|psr|torp)\\.[xy]$", names(tm), value = TRUE)
   keep <- stats::complete.cases(tm[, ft, drop = FALSE])
   if (any(!keep)) tm <- tm[keep, , drop = FALSE]
-  # A GAM smooth needs more unique covariate values than its basis dimension.
-  # Under EPV3_CHANNELS = 3L the hitout slot is ZEROED, so epr_hitout_diff
-  # collapses to 131 unique values against v2's 2,314 and mgcv aborts the whole
-  # rolling eval with "a term has fewer unique covariate combinations than
-  # specified maximum degrees of freedom" on the very first training window.
-  # Dropping it is also the correct modelling choice -- a channel that does not
-  # exist should not be a feature. Reported, never silent: a feature vanishing
-  # from one arm and not another changes what is being compared.
+  # REPORT degenerate features; do NOT remove the columns. Under
+  # EPV3_CHANNELS = 3L the hitout slot is zeroed, so epr_hitout_diff is
+  # identically constant. The GAMs handle that themselves now --
+  # .train_match_gams() drops any smooth whose variable has fewer unique values
+  # than its basis dimension -- but the XGBoost trainer selects a FIXED feature
+  # list, so deleting the column from the frame throws a vctrs subscript error
+  # instead. Trees ignore a constant feature harmlessly; the frame keeps its
+  # shape.
+  #
+  # Still reported, because a feature going constant in one arm and not another
+  # changes what is being compared and must never be silent.
   degen <- ft[vapply(ft, function(v) length(unique(tm[[v]][is.finite(tm[[v]])])) < 50,
                      logical(1))]
   if (length(degen) > 0) {
-    say("  [", label, "] dropping degenerate feature(s): ",
+    say("  [", label, "] degenerate feature(s), dropped from the GAMs by ",
+        ".train_match_gams() and inert for XGBoost: ",
         paste(sprintf("%s (%d unique)", degen,
                       vapply(degen, function(v) length(unique(tm[[v]][is.finite(tm[[v]])])),
                              integer(1))), collapse = ", "))
-    tm <- tm[, setdiff(names(tm), degen), drop = FALSE]
   }
   roll <- run_rolling_eval(tm, test_seasons = TEST_SEASONS,
                            gam_trainer = .train_match_gams, xgb_trainer = .train_xgb_fixed,
