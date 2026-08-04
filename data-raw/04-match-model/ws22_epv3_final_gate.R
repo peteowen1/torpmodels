@@ -139,17 +139,23 @@ v3_const <- function(prior_games) c(
   else list(EPR_PRIOR_GAMES_RECV = 3, EPR_PRIOR_GAMES_DISP = 3,
             EPR_PRIOR_GAMES_SPOIL = 3, EPR_PRIOR_GAMES_HITOUT = 3))
 
+# Each arm's constants stay WITH the arm, because they are needed twice: once to
+# build the ratings and again inside run_arm(), where .build_team_ratings_df()
+# reads EPR constants to fill NA ratings. An earlier version set them only around
+# the rating build, so every arm's FEATURES were built under whichever constants
+# happened to be set last -- the v2 baseline was filling its NA EPR ratings with
+# a v3-scaled prior of -4.32 instead of -2, which is not a v2 baseline at all.
+ARMS <- list(
+  list(label = "v2 production",           const = V2_CONST,        pgd = "v2prod",   eng = "v2", rt = "v2prod"),
+  list(label = "v3 final, prior_games 3", const = v3_const(FALSE), pgd = "fin_ship", eng = "v3", rt = "gate_v3_pg3"),
+  list(label = "v3 final",                const = v3_const(TRUE),  pgd = "fin_ship", eng = "v3", rt = "gate_v3_final")
+)
+
 rts <- list()
-set_const(V2_CONST)
-rts[["v2 production"]] <- build_ratings(build_pgd("v2prod", "v2", 1.0), "v2prod", "v2")
-
-set_const(v3_const(FALSE))
-rts[["v3 final, prior_games 3"]] <-
-  build_ratings(build_pgd("fin_ship", "v3", 1.0), "gate_v3_pg3", "v3")
-
-set_const(v3_const(TRUE))
-rts[["v3 final"]] <-
-  build_ratings(build_pgd("fin_ship", "v3", 1.0), "gate_v3_final", "v3")
+for (a in ARMS) {
+  set_const(a$const)
+  rts[[a$label]] <- build_ratings(build_pgd(a$pgd, a$eng, 1.0), a$rt, a$eng)
+}
 
 say("")
 say("--- ARMS GUARD: no two arms may be identical ---")
@@ -182,6 +188,23 @@ run_arm <- function(label, torp_df) {
   ft <- grep("^(epr|psr|torp|elo|xelo).*_diff$|^(epr|psr|torp)\\.[xy]$", names(tm), value = TRUE)
   keep <- stats::complete.cases(tm[, ft, drop = FALSE])
   if (any(!keep)) tm <- tm[keep, , drop = FALSE]
+  # A GAM smooth needs more unique covariate values than its basis dimension.
+  # Under EPV3_CHANNELS = 3L the hitout slot is ZEROED, so epr_hitout_diff
+  # collapses to 131 unique values against v2's 2,314 and mgcv aborts the whole
+  # rolling eval with "a term has fewer unique covariate combinations than
+  # specified maximum degrees of freedom" on the very first training window.
+  # Dropping it is also the correct modelling choice -- a channel that does not
+  # exist should not be a feature. Reported, never silent: a feature vanishing
+  # from one arm and not another changes what is being compared.
+  degen <- ft[vapply(ft, function(v) length(unique(tm[[v]][is.finite(tm[[v]])])) < 50,
+                     logical(1))]
+  if (length(degen) > 0) {
+    say("  [", label, "] dropping degenerate feature(s): ",
+        paste(sprintf("%s (%d unique)", degen,
+                      vapply(degen, function(v) length(unique(tm[[v]][is.finite(tm[[v]])])),
+                             integer(1))), collapse = ", "))
+    tm <- tm[, setdiff(names(tm), degen), drop = FALSE]
+  }
   roll <- run_rolling_eval(tm, test_seasons = TEST_SEASONS,
                            gam_trainer = .train_match_gams, xgb_trainer = .train_xgb_fixed,
                            extra_feature_cols = "xelo_diff", cv_extra_feature_cols = "xelo_diff")
@@ -193,8 +216,9 @@ run_arm <- function(label, torp_df) {
   p
 }
 
-preds <- rbindlist(lapply(names(rts), function(nm) run_arm(nm, rts[[nm]])),
-                   use.names = TRUE, fill = TRUE)
+preds <- rbindlist(
+  lapply(ARMS, function(a) { set_const(a$const); run_arm(a$label, rts[[a$label]]) }),
+  use.names = TRUE, fill = TRUE)
 common <- Reduce(intersect, split(preds$match_id, preds$arm))
 preds <- preds[match_id %in% common]
 say("")
