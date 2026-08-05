@@ -199,36 +199,34 @@ for (a in ARMS) {
 }
 
 say(""); say("=== RESULTS ===")
-allp <- merge(rbindlist(preds, use.names = TRUE, fill = TRUE),
-              res[, .(match_id = as.character(match_id), actual = home_score - away_score)],
-              by = "match_id")
-allp[, home_win := as.integer(actual > 0)]
-say_dt(allp[, .(n = .N, MAE = round(mean(abs(pred_margin - actual)), 4),
-                bits = round(.bits(pmin(pmax(pred_home_win_prob, 1e-6), 1 - 1e-6), home_win), 4),
-                tips = sum((pred_margin > 0) == (actual > 0))), by = arm], 5)
+# The rolling eval returns `pred_win`, NOT `pred_home_win_prob` -- the latter
+# does not exist and crashed ws23's summary after all three arms had already
+# run. `margin` and `home_win` come back joined on, so no merge is needed here.
+allp <- rbindlist(preds, use.names = TRUE, fill = TRUE)[
+  is.finite(pred_margin) & is.finite(margin)]
+say_dt(allp[, .(n = .N, MAE = round(mean(abs(pred_margin - margin)), 4),
+                RMSE = round(sqrt(mean((pred_margin - margin)^2)), 4),
+                bits = round(.bits(pmin(pmax(pred_win, 1e-6), 1 - 1e-6), home_win), 4),
+                tips = sum((pred_margin > 0) == (margin > 0))), by = arm], 5)
 
 ref <- "v3 ship"
 common <- Reduce(intersect, lapply(preds, function(p) p$match_id))
 say(""); say("paired against '", ref, "' on ", length(common), " common matches:")
-ba <- merge(preds[[ref]][match_id %chin% common][order(match_id)],
-            res[, .(match_id = as.character(match_id), actual = home_score - away_score)],
-            by = "match_id")
+ba <- preds[[ref]][match_id %chin% common][order(match_id)]
 for (nm in setdiff(names(preds), ref)) {
-  q <- merge(preds[[nm]][match_id %chin% common][order(match_id)],
-             res[, .(match_id = as.character(match_id), actual = home_score - away_score)],
-             by = "match_id")
-  dd <- abs(q$pred_margin - q$actual) - abs(ba$pred_margin - ba$actual)
+  q <- preds[[nm]][match_id %chin% common][order(match_id)]
+  dd <- abs(q$pred_margin - q$margin) - abs(ba$pred_margin - ba$margin)
+  dd <- dd[is.finite(dd)]
   tt <- t.test(dd)
   say(sprintf("  %-18s dMAE %+.4f  95%% CI [%+.4f, %+.4f]  (negative = better than ship)",
               nm, mean(dd), tt$conf.int[1], tt$conf.int[2]))
 }
 # The two difficulty arms differ only in the surprise share, so this pair
 # isolates it -- and it was already valid in ws23, where both were built fresh.
-q1 <- merge(preds[["v3 + difficulty"]][match_id %chin% common][order(match_id)],
-            res[, .(match_id = as.character(match_id), actual = home_score - away_score)], by = "match_id")
-q2 <- merge(preds[["v3 + measured"]][match_id %chin% common][order(match_id)],
-            res[, .(match_id = as.character(match_id), actual = home_score - away_score)], by = "match_id")
-dd <- abs(q2$pred_margin - q2$actual) - abs(q1$pred_margin - q1$actual)
+q1 <- preds[["v3 + difficulty"]][match_id %chin% common][order(match_id)]
+q2 <- preds[["v3 + measured"]][match_id %chin% common][order(match_id)]
+dd <- abs(q2$pred_margin - q2$margin) - abs(q1$pred_margin - q1$margin)
+dd <- dd[is.finite(dd)]
 tt <- t.test(dd)
 say(""); say(sprintf("measured share vs flat 0.5: dMAE %+.4f  95%% CI [%+.4f, %+.4f]",
                      mean(dd), tt$conf.int[1], tt$conf.int[2]))
