@@ -234,7 +234,7 @@ allp <- merge(allp, res[, .(match_id = as.character(match_id),
 allp[, home_win := as.integer(actual > 0)]
 summ <- allp[, .(n = .N,
                  MAE = round(mean(abs(pred_margin - actual)), 4),
-                 bits = round(.bits(pmin(pmax(pred_home_win_prob, 1e-6), 1 - 1e-6), home_win), 4),
+                 bits = round(.bits(pmin(pmax(pred_win, 1e-6), 1 - 1e-6), home_win), 4),
                  tips = sum((pred_margin > 0) == (actual > 0))), by = arm]
 say_dt(summ, 5)
 

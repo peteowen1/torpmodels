@@ -58,7 +58,7 @@ SHARE_SCALE <- 1.5           # retained for the fallback-value derivation below
 # contest_epv while a key forward's is a same-team artifact. Built and validated by
 # build_exact_spoil_gap_counts.R (reproduces production spoils_priced on 100% of
 # player-matches, cor 0.9999).
-GAPS <- "C:/Users/peteo/AppData/Local/Temp/claude/C--dev-torpverse/92e2b422-0dee-4727-90de-364d23375767/scratchpad/spoil_gap_counts.parquet"
+GAPS <- file.path(EXP, "results", "spoil_gap_counts.parquet")  # built by build_exact_spoil_gap_counts.R; was a dead Claude-session temp path
 CACHE      <- file.path(EXP, "results", "ws16_arms_cache.rds")
 EVAL_CACHE <- file.path(EXP, "results", "ws16_eval_cache.rds")
 OUT        <- file.path(EXP, "results", "ws16_spoil_share_sweep.rds")
