@@ -6,6 +6,36 @@
 # repo/tag explicitly and register hooks via options() (see vb_publish).
 VERSEBUS_VERSION <- "1.1.0"
 
+# These two live in torp's constants_data.R, which is outside the shared
+# function block the sync test compares -- so copying versebus.R across brought
+# the references without the definitions, and R CMD check flagged both as
+# undefined globals. Defined here to keep the vendored copy self-contained.
+# Values must match torp's.
+
+#' Timeout for the authoritative asset-size read
+#'
+#' `.vb_asset_true_size()` transfers one byte, so this bounds connection and
+#' redirect time, not download time. Kept short deliberately: it runs only after
+#' the post-upload verify has already exhausted its retries, and a slow answer
+#' there must not extend a release job that is already late.
+#' @keywords internal
+VB_TRUE_SIZE_TIMEOUT_SECS <- 20
+
+#' Sentinel: the download path positively reported the asset absent
+#'
+#' `.vb_asset_true_size()` answers a byte count, `NA_real_` for "could not
+#' tell", and this for "the server said 404/410". Those last two must not
+#' collapse together: callers read "could not tell" as a reason to warn and
+#' proceed, so a genuinely lost upload answering 404 would be reported as a
+#' successful write. Negative so it cannot be mistaken for a real byte count.
+#'
+#' It is NOT collision-proof against every comparison: being negative, it
+#' satisfies `true_bytes < local_bytes` and so reads as "a truncated upload"
+#' unless callers exclude it first. Every size comparison against this value
+#' must test for the sentinel explicitly.
+#' @keywords internal
+VB_ASSET_CONFIRMED_ABSENT <- -1
+
 # Session state: one-time legacy warnings, manifest-seen memory (for the
 # retry-once-on-momentary-absence rule), manifest fetch rate limiting.
 .vb_state <- new.env(parent = emptyenv())
