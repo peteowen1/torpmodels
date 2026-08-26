@@ -6,6 +6,36 @@
 # repo/tag explicitly and register hooks via options() (see vb_publish).
 VERSEBUS_VERSION <- "1.1.0"
 
+# These two live in torp's constants_data.R, which is outside the shared
+# function block the sync test compares -- so copying versebus.R across brought
+# the references without the definitions, and R CMD check flagged both as
+# undefined globals. Defined here to keep the vendored copy self-contained.
+# Values must match torp's.
+
+#' Timeout for the authoritative asset-size read
+#'
+#' `.vb_asset_true_size()` transfers one byte, so this bounds connection and
+#' redirect time, not download time. Kept short deliberately: it runs only after
+#' the post-upload verify has already exhausted its retries, and a slow answer
+#' there must not extend a release job that is already late.
+#' @keywords internal
+VB_TRUE_SIZE_TIMEOUT_SECS <- 20
+
+#' Sentinel: the download path positively reported the asset absent
+#'
+#' `.vb_asset_true_size()` answers a byte count, `NA_real_` for "could not
+#' tell", and this for "the server said 404/410". Those last two must not
+#' collapse together: callers read "could not tell" as a reason to warn and
+#' proceed, so a genuinely lost upload answering 404 would be reported as a
+#' successful write. Negative so it cannot be mistaken for a real byte count.
+#'
+#' It is NOT collision-proof against every comparison: being negative, it
+#' satisfies `true_bytes < local_bytes` and so reads as "a truncated upload"
+#' unless callers exclude it first. Every size comparison against this value
+#' must test for the sentinel explicitly.
+#' @keywords internal
+VB_ASSET_CONFIRMED_ABSENT <- -1
+
 # Session state: one-time legacy warnings, manifest-seen memory (for the
 # retry-once-on-momentary-absence rule), manifest fetch rate limiting.
 .vb_state <- new.env(parent = emptyenv())
@@ -17,7 +47,7 @@ VERSEBUS_VERSION <- "1.1.0"
   # basename(tempfile("")) for local entropy, NOT sample(). sample() advances
   # the CALLER's RNG stream, so publishing silently changed the draws of any
   # simulation seeded before it -- an invisible reproducibility break in a
-  # package that also fits models and runs sims. tempfile() is
+  # package that also fits models and runs tournament sims. tempfile() is
   # process-unique without touching .Random.seed.
   suffix <- if (nzchar(run_id)) paste0("-r", run_id) else
     paste0("-l", substr(basename(tempfile("")), 5, 10))
@@ -203,6 +233,70 @@ vb_list_assets <- function(repo, tag) {
   )
 }
 
+#' Read an asset's true stored size, bypassing the release listing
+#'
+#' The release-listing endpoint can serve the PREVIOUS asset's row for a few
+#' seconds after an upload (torpdata#74). When that happens there is no way to
+#' tell a lagging read from a lost write out of the listing alone, because every
+#' field in it — size, `updated_at`, even the asset `id` — belongs to the stale
+#' row. Asking by `id` therefore just re-confirms the stale answer.
+#'
+#' The release DOWNLOAD path resolves by **name**, so it cannot hand back the
+#' previous asset. A one-byte ranged GET against it costs a single byte on the
+#' wire and reports the object's real length in `Content-Range`.
+#'
+#' Best-effort by contract: **every** failure path returns `NA_real_`, including
+#' a private repo whose download redirect needs credentials we do not have. This
+#' must never become the reason an upload that succeeded is reported as failed —
+#' callers fall back to whatever they did before.
+#'
+#' @param repo "owner/name".
+#' @param tag Release tag.
+#' @param file_name Asset file name, including extension.
+#' @return Size in bytes, or `NA_real_` if it could not be determined.
+#' @keywords internal
+.vb_asset_true_size <- function(repo, tag, file_name) {
+  tryCatch({
+    url <- sprintf("https://github.com/%s/releases/download/%s/%s",
+                   repo, utils::URLencode(tag, reserved = TRUE),
+                   utils::URLencode(file_name, reserved = TRUE))
+    h <- curl::new_handle()
+    hdrs <- list(Range = "bytes=0-0", `User-Agent` = "torp-postupload-verify")
+    tok <- Sys.getenv("GITHUB_PAT", Sys.getenv("GITHUB_TOKEN", ""))
+    if (nzchar(tok)) hdrs$Authorization <- paste("token", tok)
+    curl::handle_setheaders(h, .list = hdrs)
+    curl::handle_setopt(h, followlocation = TRUE,
+                        timeout = VB_TRUE_SIZE_TIMEOUT_SECS)
+    resp <- curl::curl_fetch_memory(url, handle = h)
+    hh <- curl::parse_headers_list(resp$headers)
+    # 206 is the expected answer: "bytes 0-0/<total>".
+    cr <- hh[["content-range"]]
+    if (!is.null(cr) && grepl("/", cr[1L], fixed = TRUE)) {
+      n <- suppressWarnings(as.numeric(sub(".*/", "", cr[1L])))
+      if (is.finite(n)) return(n)
+    }
+    # A server that ignored the range answers 200 with the WHOLE object, and
+    # then content-length is the full size. Only trust that on a 200 -- on a 206
+    # content-length is the length of the range (1), which would read as a
+    # catastrophically truncated file.
+    if (identical(as.integer(resp$status_code), 200L)) {
+      cl <- hh[["content-length"]]
+      if (!is.null(cl)) {
+        n <- suppressWarnings(as.numeric(cl[1L]))
+        if (is.finite(n)) return(n)
+      }
+    }
+    # A 404/410 on the DOWNLOAD path is evidence, not ignorance: the object is
+    # not there. Returning NA_real_ here would say "could not tell", and the
+    # caller reads that as "unreachable -- warn and proceed", so a genuinely
+    # lost upload would report success. That path became reachable when an
+    # asset missing from the listing started being confirmed here rather than
+    # aborting outright, so the distinction has to be made (2026-08-18 review).
+    if (as.integer(resp$status_code) %in% c(404L, 410L)) return(VB_ASSET_CONFIRMED_ABSENT)
+    NA_real_
+  }, error = function(e) NA_real_)
+}
+
 #' Positively confirm an asset is absent from a release
 #'
 #' TRUE only when the asset list was fetched successfully AND the name is not
@@ -254,7 +348,16 @@ vb_read_manifest <- function(repo, tag, required = FALSE) {
   })
   if (is.null(m) && isTRUE(.vb_state[[paste0("seen_", key)]])) {
     Sys.sleep(10)
-    m <- tryCatch(fetch(), error = function(e) NULL)
+    # Classify the retry exactly as the first attempt does. Swallowing every
+    # error here turned a network blip into "the manifest is gone", which
+    # falls through to legacy mode and runs the rest of the session with
+    # sha256 verification silently disabled -- the precise inversion of this
+    # file's own rule that an uncertain classification is transient, never
+    # absent.
+    m <- tryCatch(fetch(), error = function(e) {
+      if (vb_classify_error(e) == "absent") return(NULL)
+      stop(e)
+    })
   }
   if (is.null(m)) {
     # A tag with no manifest at all is a bootstrap/legacy state, not an
@@ -354,7 +457,10 @@ vb_read_prev_manifest <- function(repo, tag) {
 #' propagates and the caller must opt in to "serve stale + warn" explicitly.
 #' @param manifest pass a manifest to verify sha256; NULL fetches it
 #'   (legacy mode when the tag has none)
-#' @param require_manifest TRUE in CI/strict mode (VERSEBUS_STRICT=1)
+#' @param require_manifest TRUE in CI/strict mode (VERSEBUS_STRICT=1). torp has
+#'   a `.strict_mode()` helper owning this parse rule, but this file is vendored
+#'   into torpmodels and guarded function-by-function by `test-versebus-sync.R`,
+#'   so the check stays inline here until the sibling copy gains the helper too.
 #' @param max_age optional difftime; manifest older than this raises
 #'   `vb_error_stale`
 #' @keywords internal
@@ -413,7 +519,23 @@ vb_download <- function(repo, tag, name, dest,
               "vb_error_integrity")
   }
   verify_by_size <- function() {
-    listed <- tryCatch(vb_list_assets(repo, tag), error = function(e) NULL)
+    # The defect here was SILENCE, not the fallback. Trusting the download
+    # when the listing is unavailable is deliberate: this function is also
+    # the sha-mismatch path's graceful degradation (see the caller below),
+    # and a stale manifest entry is far more common than real corruption, so
+    # aborting on a transient API blip would brick the asset until someone
+    # manually republished the manifest -- the exact outcome that caller
+    # exists to avoid. bouncer shipped the abort version, CI caught it, and
+    # it was reverted in bouncerverse/bouncer 5edd3ac (2026-08-16) for this
+    # reason. Keep the behaviour; remove the silence.
+    listed <- tryCatch(vb_list_assets(repo, tag), error = function(e) {
+      cli::cli_warn(c(
+        "{.val {name}}: could not list assets to size-check the download
+         ({conditionMessage(e)})",
+        "!" = "Accepted WITHOUT verification -- no manifest entry and no live
+               listing to corroborate it."))
+      NULL
+    })
     if (!is.null(listed) && name %in% listed$name) {
       want <- listed$size[listed$name == name][1L]
       if (!isTRUE(all.equal(as.numeric(file.size(tmp)), want))) {
@@ -484,8 +606,13 @@ vb_generation <- function(repo, tag) {
   if (!is.null(m) && !is.null(m$generation)) return(m$generation)
   assets <- vb_list_assets(repo, tag)
   if (nrow(assets) == 0L) return(NA_character_)
-  # per C:\dev\CLAUDE.md: asset updatedAt, never release createdAt
-  max(assets$updated_at)
+  # per C:\dev\CLAUDE.md: asset updatedAt, never release createdAt.
+  # na.rm because vb_list_assets deliberately fills NA for an asset missing
+  # updated_at -- without it, one malformed UNRELATED asset silently makes
+  # the whole generation NA, indistinguishable from the no-assets case.
+  stamps <- assets$updated_at[!is.na(assets$updated_at)]
+  if (!length(stamps)) return(NA_character_)
+  max(stamps)
 }
 
 #' Manifest-last atomic publish (the versebus producer pattern)
@@ -655,7 +782,16 @@ vb_publish <- function(paths, repo, tag,
 
   # 7. Own-write cache invalidation hook.
   hook <- getOption("versebus.on_publish")
-  if (is.function(hook)) try(hook(repo, tag), silent = TRUE)
+  if (is.function(hook)) {
+    # The publish itself has already succeeded, so a hook failure must not
+    # abort -- but it must not be invisible either. The hook exists so
+    # consumers refresh after a publish; if it dies silently they serve
+    # pre-publish data indefinitely with nothing recording why.
+    tryCatch(hook(repo, tag), error = function(e) {
+      cli::cli_warn(c("vb_publish: cache-invalidation hook failed: {conditionMessage(e)}",
+                      "i" = "The publish succeeded; downstream readers may serve stale data until refreshed."))
+    })
+  }
 
   cli::cli_alert_success("vb_publish: {length(entries)} asset(s) committed to {repo}@{tag} (generation {manifest$generation})")
   invisible(manifest)
@@ -677,4 +813,72 @@ vb_publish <- function(paths, repo, tag,
     }
   }
   unname(out)
+}
+
+# ---------------------------------------------------------------------------
+# Is a URL confirmed absent, or did it merely fail?
+# ---------------------------------------------------------------------------
+
+#' Confirm a URL is genuinely absent
+#'
+#' @description POSITIVE confirmation only. A HEAD request that definitively
+#'   reports the resource gone (404/410) is the ONLY thing that returns `TRUE`;
+#'   every other outcome -- 200, a 5xx, a timeout, a DNS failure -- returns
+#'   `FALSE` so the caller goes on treating the failure as transient.
+#'
+#'   Getting this backwards is the expensive direction: a caller that reads
+#'   "network blip" as "the file does not exist" overwrites full-history
+#'   ratings-data with just the seasons one run computed (torp P1/P8). So the
+#'   fail-safe answer is FALSE.
+#'
+#' @param url A single URL.
+#' @return `TRUE` only when the server positively reports the resource absent.
+#' @keywords internal
+.url_confirmed_absent <- function(url) {
+  tryCatch({
+    h <- curl::new_handle(nobody = TRUE, followlocation = TRUE, timeout = 15L)
+    status <- curl::curl_fetch_memory(url, handle = h)$status_code
+    isTRUE(status %in% c(404L, 410L))
+  }, error = function(e) FALSE)
+}
+
+#' Did this download error mean "absent"?
+#'
+#' @description Classifies a failed parquet read as absent-vs-transient.
+#'
+#'   WHY THIS IS NOT JUST A REGEX. The message check is a fast path, not the
+#'   authority. R's `download.file()` route reports the HTTP status in a
+#'   *warning* ("HTTP status was '404 Not Found'") and leaves the error itself
+#'   as a bare "cannot open URL '...'", so a message regex sees no 404 and
+#'   silently classifies a genuinely missing file as transient. That misrouted
+#'   every caller relying on `vb_error_absent`: building a brand-new rating
+#'   vintage aborted six times over, because the not-yet-written
+#'   torp_ratings_<label>.parquet read as a network failure rather than as the
+#'   legitimately-absent file it was (2026-08-18, staging EPV v3).
+#'
+#'   Widening the regex would just move the brittleness, so absence is
+#'   confirmed against the resource itself.
+#'
+#' @param e The condition raised by the failed read.
+#' @param url The URL that was being read.
+#' @return `TRUE` if the resource is confirmed absent.
+#' @keywords internal
+.error_is_absent <- function(e, url) {
+  msg <- conditionMessage(e)
+  if (grepl("404|Not Found", msg, ignore.case = TRUE)) return(TRUE)
+
+  # Confirm against the resource ONLY when the message says nothing about
+  # status. An error naming a 5xx, a timeout or a refused connection already
+  # tells us the file's existence is not the problem, and asking the network on
+  # every such failure would make error classification depend on the network
+  # being reachable -- including under test, which is how a gate quietly stops
+  # meaning anything.
+  #
+  # An uninformative shape missing from this list degrades to transient: the
+  # caller retries, then aborts loudly, rather than concluding "absent" and
+  # overwriting full-history data. That is the safe direction to be wrong in.
+  uninformative <- grepl("cannot open URL|could not open|Failed to open|unable to open",
+                         msg, ignore.case = TRUE)
+  if (!uninformative) return(FALSE)
+  .url_confirmed_absent(url)
 }
