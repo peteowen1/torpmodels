@@ -90,32 +90,78 @@
     predict(model, xgboost::xgb.DMatrix(data = mat))
   }
 
+  # Season-grouped out-of-fold assignment (same reasoning/shape as
+  # torp:::.train_match_xgb()'s fix, R/match_train.R) -- used only to de-leak
+  # the stacked cascade features below (steps 1, 2 and 3's predictions feed
+  # later steps as inputs), NOT a substitute for `train_filter`.
+  xgb_seasons <- sort(unique(xgb_df$season.x))
+  folds <- lapply(xgb_seasons, function(s) which(xgb_df$season.x == s))
+
+  # Out-of-fold prediction for one cascade stage at this function's ALREADY-
+  # FIXED nrounds `nr` (this function's whole design point is a pre-chosen
+  # nrounds -- see roxygen above -- so no per-fold xgb.cv, just refit at `nr`
+  # on each fold's complement and predict on the held-out fold).
+  oof_predict_fixed <- function(df, label, weights, feature_cols, params, nr) {
+    oof <- rep(NA_real_, nrow(df))
+    for (f in folds) {
+      fmat_tr <- stats::model.matrix(~ . - 1, data = df[-f, feature_cols, drop = FALSE])
+      dtr <- xgboost::xgb.DMatrix(data = fmat_tr, label = label[-f], weight = weights[-f])
+      set.seed(1234)
+      fit <- xgboost::xgb.train(params = params, data = dtr, nrounds = nr, print_every_n = 0, verbose = 0)
+      fmat_te <- stats::model.matrix(~ . - 1, data = df[f, feature_cols, drop = FALSE])
+      oof[f] <- predict(fit, xgboost::xgb.DMatrix(data = fmat_te))
+    }
+    oof
+  }
+
   # Step 1: total xPoints
   m1 <- train_fixed(xgb_df, xgb_df$total_xpoints_adj, xgb_df$weightz,
                      base_cols, reg_params, nrounds_vec["total_xpoints"])
-  xgb_df$xgb_pred_tot_xscore <- predict_all(m1, xgb_df, base_cols)
+  # Out-of-fold correction for training rows: steps 2-4 all consume
+  # xgb_pred_tot_xscore as an input feature. team_mdl_df's non-training rows
+  # (upcoming/future rounds) keep the full-model prediction -- already
+  # legitimately out-of-sample for them.
+  xgb_df$xgb_pred_tot_xscore <- oof_predict_fixed(xgb_df, xgb_df$total_xpoints_adj,
+                                                   xgb_df$weightz, base_cols, reg_params,
+                                                   nrounds_vec["total_xpoints"])
   team_mdl_df$xgb_pred_tot_xscore <- predict_all(m1, team_mdl_df, base_cols)
+  team_mdl_df$xgb_pred_tot_xscore[train_mask] <- xgb_df$xgb_pred_tot_xscore
 
   # Step 2: xScore diff
   s2_cols <- c(base_cols, "xgb_pred_tot_xscore")
   m2 <- train_fixed(xgb_df, xgb_df$xscore_diff, xgb_df$weightz,
                      s2_cols, reg_params, nrounds_vec["xscore_diff"])
-  xgb_df$xgb_pred_xscore_diff <- predict_all(m2, xgb_df, s2_cols)
+  # Out-of-fold correction: steps 3 and 4 both consume xgb_pred_xscore_diff.
+  xgb_df$xgb_pred_xscore_diff <- oof_predict_fixed(xgb_df, xgb_df$xscore_diff,
+                                                    xgb_df$weightz, s2_cols, reg_params,
+                                                    nrounds_vec["xscore_diff"])
   team_mdl_df$xgb_pred_xscore_diff <- predict_all(m2, team_mdl_df, s2_cols)
+  team_mdl_df$xgb_pred_xscore_diff[train_mask] <- xgb_df$xgb_pred_xscore_diff
 
   # Step 3: conv diff
   s3_cols <- c(base_cols, "xgb_pred_tot_xscore", "xgb_pred_xscore_diff")
   m3 <- train_fixed(xgb_df, xgb_df$shot_conv_diff, xgb_df$shot_weightz,
                      s3_cols, reg_params, nrounds_vec["conv_diff"])
-  xgb_df$xgb_pred_conv_diff <- predict_all(m3, xgb_df, s3_cols)
+  # Out-of-fold correction: step 4 consumes xgb_pred_conv_diff.
+  xgb_df$xgb_pred_conv_diff <- oof_predict_fixed(xgb_df, xgb_df$shot_conv_diff,
+                                                  xgb_df$shot_weightz, s3_cols, reg_params,
+                                                  nrounds_vec["conv_diff"])
   team_mdl_df$xgb_pred_conv_diff <- predict_all(m3, team_mdl_df, s3_cols)
+  team_mdl_df$xgb_pred_conv_diff[train_mask] <- xgb_df$xgb_pred_conv_diff
 
   # Step 4: score diff
   s4_cols <- c(base_cols, "xgb_pred_xscore_diff", "xgb_pred_conv_diff", "xgb_pred_tot_xscore")
   m4 <- train_fixed(xgb_df, xgb_df$score_diff, xgb_df$weightz,
                      s4_cols, reg_params, nrounds_vec["score_diff"])
-  xgb_df$xgb_pred_score_diff <- predict_all(m4, xgb_df, s4_cols)
+  # Out-of-fold correction: step 5 consumes xgb_pred_score_diff, and it is
+  # also served directly (production blend uses it for every row including
+  # completed matches) -- so training-row honesty here matters beyond just
+  # step 5's own fit.
+  xgb_df$xgb_pred_score_diff <- oof_predict_fixed(xgb_df, xgb_df$score_diff,
+                                                   xgb_df$weightz, s4_cols, reg_params,
+                                                   nrounds_vec["score_diff"])
   team_mdl_df$xgb_pred_score_diff <- predict_all(m4, team_mdl_df, s4_cols)
+  team_mdl_df$xgb_pred_score_diff[train_mask] <- xgb_df$xgb_pred_score_diff
 
   # Step 5: win probability
   s5_cols <- c("team_type_fac", "xgb_pred_tot_xscore", "xgb_pred_score_diff",
