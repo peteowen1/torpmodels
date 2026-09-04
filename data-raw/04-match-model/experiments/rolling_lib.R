@@ -94,6 +94,7 @@
   # torp:::.train_match_xgb()'s fix, R/match_train.R) -- used only to de-leak
   # the stacked cascade features below (steps 1, 2 and 3's predictions feed
   # later steps as inputs), NOT a substitute for `train_filter`.
+  stopifnot(!anyNA(xgb_df$season.x))
   xgb_seasons <- sort(unique(xgb_df$season.x))
   folds <- lapply(xgb_seasons, function(s) which(xgb_df$season.x == s))
 
