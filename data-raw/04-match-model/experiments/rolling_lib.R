@@ -85,9 +85,32 @@
     )
   }
 
+  # Mirrors torp:::.predict_all_rows() (torp R/match_train.R), and must keep
+  # mirroring it. model.matrix()'s default na.action is na.omit, so ANY row with
+  # an NA feature is dropped from the matrix and the returned vector comes back
+  # shorter than the frame it is assigned onto. When the lengths happen to divide
+  # evenly R recycles instead of erroring, and predictions land on the wrong
+  # matches with nothing logged -- the first symptom is bad numbers, not a
+  # failure. torp fixed this on its own side (PR #155); this file has its own
+  # copy and did not get the fix (torpmodels#34). Live trigger: unplayed finals
+  # placeholder fixtures, which carry NA rating features.
   predict_all <- function(model, df, feature_cols) {
-    mat <- stats::model.matrix(~ . - 1, data = df[, feature_cols, drop = FALSE])
-    predict(model, xgboost::xgb.DMatrix(data = mat))
+    fdf <- df[, feature_cols, drop = FALSE]
+    mf <- stats::model.frame(~ . - 1, data = fdf, na.action = stats::na.pass)
+    mat <- stats::model.matrix(~ . - 1, data = mf)
+    if (nrow(mat) != nrow(df)) {
+      stop(sprintf(paste0("predict_all(): design matrix has %d row(s) for a %d-row frame -- ",
+                          "rows were dropped, so predictions cannot be aligned to matches. ",
+                          "Expected na.pass to preserve every row; check for a non-numeric feature column."),
+                   nrow(mat), nrow(df)))
+    }
+    preds <- predict(model, xgboost::xgb.DMatrix(data = mat))
+    if (length(preds) != nrow(df)) {
+      stop(sprintf(paste0("predict_all(): predicted %d value(s) for %d row(s) -- ",
+                          "refusing to return a vector that would recycle onto the wrong matches."),
+                   length(preds), nrow(df)))
+    }
+    preds
   }
 
   # Season-grouped out-of-fold assignment (same reasoning/shape as
@@ -283,9 +306,32 @@
          best_n = best_n, cv_score = cv_score)
   }
 
+  # Mirrors torp:::.predict_all_rows() (torp R/match_train.R), and must keep
+  # mirroring it. model.matrix()'s default na.action is na.omit, so ANY row with
+  # an NA feature is dropped from the matrix and the returned vector comes back
+  # shorter than the frame it is assigned onto. When the lengths happen to divide
+  # evenly R recycles instead of erroring, and predictions land on the wrong
+  # matches with nothing logged -- the first symptom is bad numbers, not a
+  # failure. torp fixed this on its own side (PR #155); this file has its own
+  # copy and did not get the fix (torpmodels#34). Live trigger: unplayed finals
+  # placeholder fixtures, which carry NA rating features.
   predict_all <- function(model, df, feature_cols) {
-    mat <- stats::model.matrix(~ . - 1, data = df[, feature_cols, drop = FALSE])
-    predict(model, xgboost::xgb.DMatrix(data = mat))
+    fdf <- df[, feature_cols, drop = FALSE]
+    mf <- stats::model.frame(~ . - 1, data = fdf, na.action = stats::na.pass)
+    mat <- stats::model.matrix(~ . - 1, data = mf)
+    if (nrow(mat) != nrow(df)) {
+      stop(sprintf(paste0("predict_all(): design matrix has %d row(s) for a %d-row frame -- ",
+                          "rows were dropped, so predictions cannot be aligned to matches. ",
+                          "Expected na.pass to preserve every row; check for a non-numeric feature column."),
+                   nrow(mat), nrow(df)))
+    }
+    preds <- predict(model, xgboost::xgb.DMatrix(data = mat))
+    if (length(preds) != nrow(df)) {
+      stop(sprintf(paste0("predict_all(): predicted %d value(s) for %d row(s) -- ",
+                          "refusing to return a vector that would recycle onto the wrong matches."),
+                   length(preds), nrow(df)))
+    }
+    preds
   }
 
   s1 <- train_step(xgb_df, xgb_df$total_xpoints_adj, xgb_df$weightz, s1_cols, reg_params)
