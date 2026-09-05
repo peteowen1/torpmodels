@@ -99,16 +99,17 @@
     mf <- stats::model.frame(~ . - 1, data = fdf, na.action = stats::na.pass)
     mat <- stats::model.matrix(~ . - 1, data = mf)
     if (nrow(mat) != nrow(df)) {
-      stop(sprintf(paste0("predict_all(): design matrix has %d row(s) for a %d-row frame -- ",
-                          "rows were dropped, so predictions cannot be aligned to matches. ",
-                          "Expected na.pass to preserve every row; check for a non-numeric feature column."),
-                   nrow(mat), nrow(df)))
+      cli::cli_abort(c(
+        "predict_all(): feature matrix has {nrow(mat)} row{?s} for a {nrow(df)}-row frame.",
+        "x" = "Rows were dropped building the design matrix, so predictions cannot be aligned to matches.",
+        "i" = "Expected na.pass to preserve every row -- check for a non-numeric feature column."
+      ))
     }
     preds <- predict(model, xgboost::xgb.DMatrix(data = mat))
     if (length(preds) != nrow(df)) {
-      stop(sprintf(paste0("predict_all(): predicted %d value(s) for %d row(s) -- ",
-                          "refusing to return a vector that would recycle onto the wrong matches."),
-                   length(preds), nrow(df)))
+      cli::cli_abort(
+        "predict_all(): predicted {length(preds)} value{?s} for {nrow(df)} row{?s} -- refusing to return a vector that would recycle."
+      )
     }
     preds
   }
@@ -320,16 +321,17 @@
     mf <- stats::model.frame(~ . - 1, data = fdf, na.action = stats::na.pass)
     mat <- stats::model.matrix(~ . - 1, data = mf)
     if (nrow(mat) != nrow(df)) {
-      stop(sprintf(paste0("predict_all(): design matrix has %d row(s) for a %d-row frame -- ",
-                          "rows were dropped, so predictions cannot be aligned to matches. ",
-                          "Expected na.pass to preserve every row; check for a non-numeric feature column."),
-                   nrow(mat), nrow(df)))
+      cli::cli_abort(c(
+        "predict_all(): feature matrix has {nrow(mat)} row{?s} for a {nrow(df)}-row frame.",
+        "x" = "Rows were dropped building the design matrix, so predictions cannot be aligned to matches.",
+        "i" = "Expected na.pass to preserve every row -- check for a non-numeric feature column."
+      ))
     }
     preds <- predict(model, xgboost::xgb.DMatrix(data = mat))
     if (length(preds) != nrow(df)) {
-      stop(sprintf(paste0("predict_all(): predicted %d value(s) for %d row(s) -- ",
-                          "refusing to return a vector that would recycle onto the wrong matches."),
-                   length(preds), nrow(df)))
+      cli::cli_abort(
+        "predict_all(): predicted {length(preds)} value{?s} for {nrow(df)} row{?s} -- refusing to return a vector that would recycle."
+      )
     }
     preds
   }
