@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working in the torpmodels packag
 
 ## Package Overview
 
-**torpmodels** provides pre-trained ML models for AFL analytics, served via GitHub releases with local caching. It has two exported model loaders and no data processing logic.
+**torpmodels** provides pre-trained ML models for AFL analytics, served via GitHub releases with local caching. `load_model.R` has the two model loaders (`load_torp_model()`, `load_stat_model()`); the package also exports atomic-publish, manifest-sync, and vendored-versebus helpers (see R Code below) — it is no longer just loaders.
 
 ## Architecture
 
@@ -18,8 +18,8 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for full documentation, Mermaid diagrams,
 - `R/versebus.R` - Vendored cross-verse publish/pull helper, kept in sync by diff with the copies in `torpverse/torp/R/versebus.R` and pannaverse's package (`ECOSYSTEM-FIX-PLAN.md` has the canonical spec) — not dead code, don't delete it as unused
 
 ### Model Types
-- **Core models** (tag: `core-models`): `ep`, `wp`, `wp_calibration`, `shot`, `match_gams`, `match_xgb_pipeline`, `match_margin_calibration`, `shot_player_df`, `xgb_win_model` — loaded via `load_torp_model()`
-- **Stat models** (tag: `stat-models`): 58 per-statistic GAMs (goals, disposals, etc.) — loaded via `load_stat_model()`
+- **Core models** (tag: `core-models`): `ep`, `wp`, `wp_calibration`, `live_wp_calibration`, `shot` (asset `shot_ocat_mdl.rds`), `match_gams`, `match_xgb_pipeline`, `match_margin_calibration`, `shot_player_df`, `xgb_win_model` — loaded via `load_torp_model()`
+- **Stat models** (tag: `stat-models`): 84 per-statistic GAMs as of 2026-09-27 (goals, disposals, etc. — count drifts as stats are added; `gh release view stat-models --repo peteowen1/torpmodels --json assets --jq '.assets[].name' | grep -c rds` for the current figure) — loaded via `load_stat_model()`
 
 ### Caching
 Models cache to `tools::R_user_dir("torpmodels", "cache")/models/`. Use `force_download = TRUE` to bypass cache.
