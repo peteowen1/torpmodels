@@ -9,8 +9,9 @@
 # calibration gain sits, so this scores the weekly arm on its own.
 #
 # NEW arm: `lineup_pos_group` = the 6-way group of the slot he was NAMED in that
-# round (LINEUP_POSITION_GROUP_MAP). calculate_psr() already prefers this column
-# when present; the released frame just never carried it. Rows with no on-field
+# round (LINEUP_POSITION_GROUP_MAP). Since torp#251 calculate_psr() centres on
+# this column only when asked with psr_centre = "weekly", so both arms name
+# their key explicitly below. Rows with no on-field
 # slot (bench, did not play) carry forward his last named slot, then fall back
 # to pos_group -- never to calculate_psr()'s global-mean branch, which would turn
 # every non-playing round into a different arm by accident.
@@ -76,8 +77,8 @@ if (file.exists(CACHE)) {
   if (n_direct / nrow(sk_new) < 0.2) cli::cli_abort("Under 20% of rows matched a team sheet -- join is broken.")
   sk_new[, c(".s", ".r") := NULL]
 
-  psr_old <- .compute_psr_from_stat_ratings(sk)
-  psr_new <- .compute_psr_from_stat_ratings(as.data.frame(sk_new))
+  psr_old <- .compute_psr_from_stat_ratings(sk, psr_centre = "career")
+  psr_new <- .compute_psr_from_stat_ratings(as.data.frame(sk_new), psr_centre = "weekly")
 
   po <- as.data.table(psr_old)[, .(player_id, season, round, p_old = psr)]
   pn <- as.data.table(psr_new)[, .(player_id, season, round, p_new = psr)]
