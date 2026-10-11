@@ -18,7 +18,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for full documentation, Mermaid diagrams,
 - `R/versebus.R` - Vendored cross-verse publish/pull helper, kept in sync by diff with the copies in `torpverse/torp/R/versebus.R` and pannaverse's package (`ECOSYSTEM-FIX-PLAN.md` has the canonical spec) — not dead code, don't delete it as unused
 
 ### Model Types
-- **Core models** (tag: `core-models`): `ep`, `wp`, `wp_calibration`, `live_wp_calibration`, `shot` (asset `shot_ocat_mdl.rds`), `match_gams`, `match_xgb_pipeline`, `match_margin_calibration`, `shot_player_df`, `xgb_win_model` — loaded via `load_torp_model()`
+- **Core models** (tag: `core-models`): `ep`, `wp`, `wp_calibration`, `shot` (asset `shot_ocat_mdl.rds`), `match_gams`, `match_xgb_pipeline`, `match_margin_calibration`, `shot_player_df`, `xgb_win_model` — loaded via `load_torp_model()`. The same release also carries `live_wp_calibration.json`, a browser asset for the blog worker (from `data-raw/05-live-wp-model/fit_live_wp_calibration.R`) that `load_torp_model()` cannot load
 - **Stat models** (tag: `stat-models`): 84 per-statistic GAMs as of 2026-09-27 (goals, disposals, etc. — count drifts as stats are added; `gh release view stat-models --repo peteowen1/torpmodels --json assets --jq '.assets[].name' | grep -c rds` for the current figure) — loaded via `load_stat_model()`
 
 ### Caching
