@@ -35,7 +35,11 @@ deliberate re-baseline after a feature/formula change).}
 relative RMSE increase (new/old - 1) before a file is gated.}
 }
 \value{
-Character vector of successfully uploaded file names, invisibly.
+Character vector of successfully uploaded file names, invisibly,
+with attributes \code{gated} (files held back by the gate) and \code{ungated}
+(files published without a regression check because the previous
+manifest or the new model's \code{cv_metric} could not be read; each one
+also raises a warning).
 }
 \description{
 Unlike \code{\link[=publish_model_group]{publish_model_group()}}'s fixed-group atomicity (built for
