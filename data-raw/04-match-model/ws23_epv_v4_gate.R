@@ -110,6 +110,8 @@ run_arm <- function(label, torp_df) {
 preds <- rbindlist(lapply(ARMS, function(a) { set_const(a$const); say("--- running arm: ", a$label, " at ", format(Sys.time())); run_arm(a$label, rts[[a$label]]) }),
                    use.names = TRUE, fill = TRUE)
 common <- Reduce(intersect, split(preds$match_id, preds$arm))
+# An empty overlap would score NaN on n = 0 rather than stop (review 2026-10-11).
+stopifnot(length(common) > 0)
 preds <- preds[match_id %in% common]
 say(""); say("--- same-games: ", length(common), " matches in every arm ---")
 metrics <- function(p, seasons = NULL) {

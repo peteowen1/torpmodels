@@ -222,6 +222,71 @@ test_that("publish_stat_models with gate = FALSE force-publishes a regressed fil
   expect_identical(upload_calls, "goals.rds")
 })
 
+test_that("publish_stat_models warns and records ungated files when the previous manifest cannot be fetched", {
+  dir <- withr::local_tempdir()
+  # A 50% regression that the gate would have caught had the manifest loaded.
+  saveRDS(stamp_model_meta(1, build_model_meta("goals", 2021:2025, list(), c("a"), cv_metric = 1.5)),
+          file.path(dir, "goals.rds"))
+
+  testthat::local_mocked_bindings(
+    pb_download = function(...) stop("HTTP 502 Bad Gateway"),  # transient, not a 404
+    pb_upload = function(file, repo, tag, name = basename(file), ...) invisible(NULL),
+    .package = "piggyback"
+  )
+  testthat::local_mocked_bindings(update_models_manifest = function(...) invisible(NULL))
+
+  expect_warning(
+    uploaded <- publish_stat_models("goals.rds", dir),
+    "regression gate skipped"
+  )
+  expect_identical(as.character(uploaded), "goals.rds")
+  expect_identical(attr(uploaded, "ungated"), "goals.rds")
+  expect_length(attr(uploaded, "gated"), 0)
+})
+
+test_that("publish_stat_models warns and records ungated files when the new model's metric is unreadable", {
+  dir <- withr::local_tempdir()
+  writeLines("not an rds file", file.path(dir, "goals.rds"))                     # unreadable
+  saveRDS(stamp_model_meta(1, build_model_meta("disposals", 2021:2025, list(), c("a"), cv_metric = NA_real_)),
+          file.path(dir, "disposals.rds"))                                     # no metric
+
+  existing_manifest <- list(schema_version = 1L, updated_at = "2026-01-01T00:00:00Z",
+                            artifacts = list(goals.rds = list(cv_metric = 1.0),
+                                             disposals.rds = list(cv_metric = 2.0)))
+  testthat::local_mocked_bindings(
+    pb_download = function(file, repo, tag, dest, ...) {
+      jsonlite::write_json(existing_manifest, file.path(dest, file), auto_unbox = TRUE, null = "null")
+      invisible(NULL)
+    },
+    pb_upload = function(file, repo, tag, name = basename(file), ...) invisible(NULL),
+    .package = "piggyback"
+  )
+  testthat::local_mocked_bindings(update_models_manifest = function(...) invisible(NULL))
+
+  warnings <- character(0)
+  uploaded <- withCallingHandlers(
+    publish_stat_models(c("goals.rds", "disposals.rds"), dir),
+    warning = function(w) { warnings <<- c(warnings, conditionMessage(w)); invokeRestart("muffleWarning") }
+  )
+  expect_length(grep("regression gate skipped", warnings), 2)
+  expect_setequal(attr(uploaded, "ungated"), c("goals.rds", "disposals.rds"))
+})
+
+test_that("publish_stat_models stays quiet on a first-ever publish (404 manifest)", {
+  dir <- withr::local_tempdir()
+  saveRDS(stamp_model_meta(1, build_model_meta("brand_new_stat", 2021:2025, list(), c("a"), cv_metric = 99)),
+          file.path(dir, "brand_new_stat.rds"))
+  testthat::local_mocked_bindings(
+    pb_download = function(...) stop("404 Not Found"),
+    pb_upload = function(file, repo, tag, name = basename(file), ...) invisible(NULL),
+    .package = "piggyback"
+  )
+  testthat::local_mocked_bindings(update_models_manifest = function(...) invisible(NULL))
+
+  expect_no_warning(uploaded <- publish_stat_models("brand_new_stat.rds", dir))
+  expect_length(attr(uploaded, "ungated"), 0)
+})
+
 test_that("manifest write moves prior entry to history and records sha256", {
   dir <- withr::local_tempdir()
   saveRDS(

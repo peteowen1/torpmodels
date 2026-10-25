@@ -4,19 +4,22 @@ This file provides guidance to Claude Code when working in the torpmodels packag
 
 ## Package Overview
 
-**torpmodels** provides pre-trained ML models for AFL analytics, served via GitHub releases with local caching. It has two exported model loaders and no data processing logic.
+**torpmodels** provides pre-trained ML models for AFL analytics, served via GitHub releases with local caching. `load_model.R` has the two model loaders (`load_torp_model()`, `load_stat_model()`); the package also exports atomic-publish, manifest-sync, and vendored-versebus helpers (see R Code below) — it is no longer just loaders.
 
 ## Architecture
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for full documentation, Mermaid diagrams, and model catalog.
 
-### R Code (2 files)
+### R Code (5 files)
 - `R/load_model.R` - All exported functions: `load_torp_model()`, `load_stat_model()`, `list_available_models()`, `check_model_cache()`, `clear_model_cache()`
 - `R/torpmodels-package.R` - Package-level docs
+- `R/model_meta.R` - Provenance stamping for saved models (see Training Scripts below)
+- `R/publish.R` - Atomic model-group publishing (`publish_model_group()`)
+- `R/versebus.R` - Vendored cross-verse publish/pull helper, kept in sync by diff with the copies in `torpverse/torp/R/versebus.R` and pannaverse's package (`ECOSYSTEM-FIX-PLAN.md` has the canonical spec) — not dead code, don't delete it as unused
 
 ### Model Types
-- **Core models** (tag: `core-models`): `ep`, `wp`, `wp_calibration`, `shot`, `match_gams`, `match_xgb_pipeline`, `match_margin_calibration`, `shot_player_df`, `xgb_win_model` — loaded via `load_torp_model()`
-- **Stat models** (tag: `stat-models`): 58 per-statistic GAMs (goals, disposals, etc.) — loaded via `load_stat_model()`
+- **Core models** (tag: `core-models`): `ep`, `wp`, `wp_calibration`, `shot` (asset `shot_ocat_mdl.rds`), `match_gams`, `match_xgb_pipeline`, `match_margin_calibration`, `shot_player_df`, `xgb_win_model` — loaded via `load_torp_model()`. The same release also carries `live_wp_calibration.json`, a browser asset for the blog worker (from `data-raw/05-live-wp-model/fit_live_wp_calibration.R`) that `load_torp_model()` cannot load
+- **Stat models** (tag: `stat-models`): 84 per-statistic GAMs as of 2026-09-27 (goals, disposals, etc. — count drifts as stats are added; `gh release view stat-models --repo peteowen1/torpmodels --json assets --jq '.assets[].name' | grep -c rds` for the current figure) — loaded via `load_stat_model()`
 
 ### Caching
 Models cache to `tools::R_user_dir("torpmodels", "cache")/models/`. Use `force_download = TRUE` to bypass cache.
@@ -70,6 +73,7 @@ piggyback::pb_upload("ep_model.rds", repo = "peteowen1/torpmodels", tag = "core-
 
 - `tests/testthat/test-load_model.R` — tests model loading, caching, and fallback behavior
 - `tests/testthat/test-train_lib.R` — sources `data-raw/lib/train_lib.R` directly (side-effect-free at source time); covers the WP recalibration/gate pure functions and the `train_core_models()` WP-branch wiring (all mocked, network-free)
+- `tests/testthat/test-model-cache.R`, `test-model_meta.R`, `test-publish.R`, `test-versebus.R`, `test-versebus-sync.R` — cover the caching, provenance-stamping, atomic-publish, and vendored-versebus paths respectively (run `ls tests/testthat/` for the current full list)
 
 ## CI/CD
 
