@@ -143,7 +143,11 @@ publish_model_group <- function(group, dir, repo = get_torpmodels_repo(),
 #' @param gate_max_regression Numeric, default `0.20`. Maximum tolerated
 #'   relative RMSE increase (new/old - 1) before a file is gated.
 #'
-#' @return Character vector of successfully uploaded file names, invisibly.
+#' @return Character vector of successfully uploaded file names, invisibly,
+#'   with attributes `gated` (files held back by the gate) and `ungated`
+#'   (files published without a regression check because the previous
+#'   manifest or the new model's `cv_metric` could not be read; each one
+#'   also raises a warning).
 #' @export
 publish_stat_models <- function(files, dir, repo = get_torpmodels_repo(),
                                 tag = "stat-models", update_manifest = TRUE,
@@ -161,14 +165,37 @@ publish_stat_models <- function(files, dir, repo = get_torpmodels_repo(),
   # it) so it's always defined for the attr() on the final return, even when
   # gate = FALSE.
   gated <- character(0)
+  # Files the gate could not check (manifest unreadable, or the new model's
+  # cv_metric unreadable). They still publish, but the caller is told: a
+  # network blip must not switch the gate off without a trace.
+  ungated <- character(0)
   if (isTRUE(gate)) {
-    prev_manifest <- tryCatch(.fetch_manifest(repo, tag), error = function(e) NULL)
+    # .fetch_manifest() returns NULL for a genuine 404 (first-ever publish,
+    # stays quiet) and aborts on any other error.
+    prev_manifest <- tryCatch(.fetch_manifest(repo, tag), error = function(e) e)
+    if (inherits(prev_manifest, "error")) {
+      cli::cli_warn(c(
+        "publish_stat_models: regression gate skipped for all {length(files)} file(s) -- could not read the previous manifest: {conditionMessage(prev_manifest)}",
+        "i" = "Ungated: {paste(files, collapse = ', ')}"
+      ))
+      ungated <- files
+      prev_manifest <- NULL
+    }
     for (f in files) {
       prev_metric <- prev_manifest$artifacts[[f]]$cv_metric
       if (is.null(prev_metric) || is.na(prev_metric)) next  # nothing to regress against
-      new_meta <- tryCatch(model_meta(readRDS(file.path(dir, f))), error = function(e) NULL)
+      new_meta <- tryCatch(model_meta(readRDS(file.path(dir, f))), error = function(e) e)
+      if (inherits(new_meta, "error")) {
+        cli::cli_warn("publish_stat_models: regression gate skipped for {.val {f}} -- could not read the new model's metadata: {conditionMessage(new_meta)}")
+        ungated <- c(ungated, f)
+        next
+      }
       new_metric <- new_meta$cv_metric
-      if (is.null(new_metric) || is.na(new_metric)) next  # can't gate without a new metric either
+      if (is.null(new_metric) || is.na(new_metric)) {
+        cli::cli_warn("publish_stat_models: regression gate skipped for {.val {f}} -- the new model has no cv_metric to compare against the previous {round(prev_metric, 4)}")
+        ungated <- c(ungated, f)
+        next
+      }
       if (new_metric > prev_metric * (1 + gate_max_regression)) {
         cli::cli_warn(c(
           "publish_stat_models: gating {.val {f}} -- cv_metric regressed {round((new_metric / prev_metric - 1) * 100, 1)}% ({round(prev_metric, 4)} -> {round(new_metric, 4)}), exceeds {gate_max_regression * 100}% tolerance",
@@ -182,6 +209,7 @@ publish_stat_models <- function(files, dir, repo = get_torpmodels_repo(),
       cli::cli_warn("publish_stat_models: all requested files were gated -- nothing to publish")
       empty <- character(0)
       attr(empty, "gated") <- gated
+      attr(empty, "ungated") <- ungated
       return(invisible(empty))
     }
   }
@@ -230,6 +258,8 @@ publish_stat_models <- function(files, dir, repo = get_torpmodels_repo(),
   # count needs to also subtract attr(result, "gated") to avoid treating a
   # deliberate quality-gate skip as an upload failure.
   attr(uploaded, "gated") <- gated
+  # Files that went up without a regression check (see `ungated` above).
+  attr(uploaded, "ungated") <- intersect(ungated, uploaded)
   invisible(uploaded)
 }
 
