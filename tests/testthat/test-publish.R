@@ -192,7 +192,7 @@ test_that("publish_stat_models never gates a file with no prior manifest entry (
           file.path(dir, "brand_new_stat.rds"))
 
   testthat::local_mocked_bindings(
-    pb_download = function(...) stop("404 Not Found"),  # no manifest yet,
+    pb_download = function(...) stop("404 Not Found"),  # no manifest yet
     .package = "piggyback"
   )
   testthat::local_mocked_bindings(
@@ -231,7 +231,7 @@ test_that("publish_stat_models warns and records ungated files when the previous
           file.path(dir, "goals.rds"))
 
   testthat::local_mocked_bindings(
-    pb_download = function(...) stop("HTTP 502 Bad Gateway"),  # transient, not a 404,
+    pb_download = function(...) stop("HTTP 502 Bad Gateway"),  # transient, not a 404
     .package = "piggyback"
   )
   testthat::local_mocked_bindings(
