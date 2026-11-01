@@ -281,7 +281,11 @@ cli::cli_alert_success("Reload verification passed.")
 
 if (upload) {
   cli::cli_h2("Publishing live_wp_calibration.json to torpmodels core-models")
-  piggyback::pb_upload(out_path, repo = "peteowen1/torpmodels", tag = "core-models")
+  # Temp name, confirm, then swap: a plain pb_upload() deletes the live copy
+  # first when the local file is newer (versebus 1.2.0, CLOBBER-AUDIT MED row).
+  restore_cache <- torpmodels:::.vb_with_fresh_listing()
+  torpmodels:::.publish_asset(out_path, repo = "peteowen1/torpmodels", tag = "core-models")
+  restore_cache()
   cli::cli_alert_success("Published live_wp_calibration.json to peteowen1/torpmodels@core-models")
   cli::cli_alert_info("This is the versioned source of truth. The worker reads model JSON exclusively from Cloudflare R2 (env.R2 binding), not GitHub releases -- a follow-up manual step must mirror this file to R2, e.g.:")
   cli::cli_inform("  wrangler r2 object put inthegame-data/afl/live-wp-calibration.json --file={out_path} --remote")
