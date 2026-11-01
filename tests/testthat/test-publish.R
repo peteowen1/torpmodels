@@ -3,8 +3,7 @@ test_that("publish_model_group aborts when any group member is missing", {  # F3
 
   upload_calls <- 0L
   testthat::local_mocked_bindings(
-    pb_upload = function(...) { upload_calls <<- upload_calls + 1L },
-    .package = "piggyback"
+    .publish_asset = function(...) { upload_calls <<- upload_calls + 1L }
   )
 
   expect_error(publish_model_group("shot", dir), "shot_player_df")
@@ -17,8 +16,7 @@ test_that("publish_model_group('wp') aborts without its wp_calibration.rds sidec
 
   upload_calls <- 0L
   testthat::local_mocked_bindings(
-    pb_upload = function(...) { upload_calls <<- upload_calls + 1L },
-    .package = "piggyback"
+    .publish_asset = function(...) { upload_calls <<- upload_calls + 1L }
   )
 
   expect_error(publish_model_group("wp", dir), "wp_calibration")
@@ -37,8 +35,10 @@ test_that("update_models_manifest treats 404 as fresh and aborts on transient er
 
   testthat::local_mocked_bindings(
     pb_download = function(...) stop("404 Not Found"),
-    pb_upload = function(...) invisible(NULL),
     .package = "piggyback"
+  )
+  testthat::local_mocked_bindings(
+    .publish_asset = function(...) invisible(NULL)
   )
   # (a) 404 -> fresh manifest is built and published without error
   expect_no_error(update_models_manifest("wp_model.rds", dir, "peteowen1/torpmodels", "core-models"))
@@ -61,10 +61,9 @@ test_that("publish_stat_models uploads all present files and updates the manifes
 
   upload_calls <- character(0)
   testthat::local_mocked_bindings(
-    pb_upload = function(file, repo, tag, name = basename(file), ...) {
+    .publish_asset = function(file, repo, tag, name = basename(file), ...) {
       upload_calls <<- c(upload_calls, basename(file))
-    },
-    .package = "piggyback"
+    }
   )
   manifest_calls <- 0L
   testthat::local_mocked_bindings(
@@ -87,11 +86,10 @@ test_that("publish_stat_models continues past an individual upload failure -- no
   saveRDS(2, file.path(dir, "disposals.rds"))
 
   testthat::local_mocked_bindings(
-    pb_upload = function(file, repo, tag, name = basename(file), ...) {
+    .publish_asset = function(file, repo, tag, name = basename(file), ...) {
       if (basename(file) == "goals.rds") stop("simulated upload failure")
       invisible(NULL)
-    },
-    .package = "piggyback"
+    }
   )
   manifest_files <- NULL
   testthat::local_mocked_bindings(
@@ -114,8 +112,7 @@ test_that("publish_stat_models warns and skips missing files rather than abortin
   saveRDS(1, file.path(dir, "goals.rds"))
 
   testthat::local_mocked_bindings(
-    pb_upload = function(...) invisible(NULL),
-    .package = "piggyback"
+    .publish_asset = function(...) invisible(NULL)
   )
   testthat::local_mocked_bindings(
     update_models_manifest = function(files, dir, repo, tag) invisible(NULL)
@@ -147,8 +144,10 @@ test_that("publish_stat_models gates a file whose cv_metric regressed beyond the
       jsonlite::write_json(existing_manifest, file.path(dest, file), auto_unbox = TRUE, null = "null")
       invisible(NULL)
     },
-    pb_upload = function(...) stop("should not upload a gated file"),
     .package = "piggyback"
+  )
+  testthat::local_mocked_bindings(
+    .publish_asset = function(...) stop("should not upload a gated file")
   )
 
   expect_warning(
@@ -172,10 +171,12 @@ test_that("publish_stat_models publishes a file that improved or stayed within t
       jsonlite::write_json(existing_manifest, file.path(dest, file), auto_unbox = TRUE, null = "null")
       invisible(NULL)
     },
-    pb_upload = function(file, repo, tag, name = basename(file), ...) {
-      upload_calls <<- c(upload_calls, basename(file))
-    },
     .package = "piggyback"
+  )
+  testthat::local_mocked_bindings(
+    .publish_asset = function(file, repo, tag, name = basename(file), ...) {
+      upload_calls <<- c(upload_calls, basename(file))
+    }
   )
   testthat::local_mocked_bindings(update_models_manifest = function(...) invisible(NULL))
 
@@ -191,9 +192,11 @@ test_that("publish_stat_models never gates a file with no prior manifest entry (
           file.path(dir, "brand_new_stat.rds"))
 
   testthat::local_mocked_bindings(
-    pb_download = function(...) stop("404 Not Found"),  # no manifest yet
-    pb_upload = function(file, repo, tag, name = basename(file), ...) invisible(NULL),
+    pb_download = function(...) stop("404 Not Found"),  # no manifest yet,
     .package = "piggyback"
+  )
+  testthat::local_mocked_bindings(
+    .publish_asset = function(file, repo, tag, name = basename(file), ...) invisible(NULL)
   )
   testthat::local_mocked_bindings(update_models_manifest = function(...) invisible(NULL))
 
@@ -208,10 +211,9 @@ test_that("publish_stat_models with gate = FALSE force-publishes a regressed fil
 
   upload_calls <- character(0)
   testthat::local_mocked_bindings(
-    pb_upload = function(file, repo, tag, name = basename(file), ...) {
+    .publish_asset = function(file, repo, tag, name = basename(file), ...) {
       upload_calls <<- c(upload_calls, basename(file))
-    },
-    .package = "piggyback"
+    }
   )
   testthat::local_mocked_bindings(update_models_manifest = function(...) invisible(NULL))
 
@@ -229,9 +231,11 @@ test_that("publish_stat_models warns and records ungated files when the previous
           file.path(dir, "goals.rds"))
 
   testthat::local_mocked_bindings(
-    pb_download = function(...) stop("HTTP 502 Bad Gateway"),  # transient, not a 404
-    pb_upload = function(file, repo, tag, name = basename(file), ...) invisible(NULL),
+    pb_download = function(...) stop("HTTP 502 Bad Gateway"),  # transient, not a 404,
     .package = "piggyback"
+  )
+  testthat::local_mocked_bindings(
+    .publish_asset = function(file, repo, tag, name = basename(file), ...) invisible(NULL)
   )
   testthat::local_mocked_bindings(update_models_manifest = function(...) invisible(NULL))
 
@@ -258,8 +262,10 @@ test_that("publish_stat_models warns and records ungated files when the new mode
       jsonlite::write_json(existing_manifest, file.path(dest, file), auto_unbox = TRUE, null = "null")
       invisible(NULL)
     },
-    pb_upload = function(file, repo, tag, name = basename(file), ...) invisible(NULL),
     .package = "piggyback"
+  )
+  testthat::local_mocked_bindings(
+    .publish_asset = function(file, repo, tag, name = basename(file), ...) invisible(NULL)
   )
   testthat::local_mocked_bindings(update_models_manifest = function(...) invisible(NULL))
 
@@ -278,8 +284,10 @@ test_that("publish_stat_models stays quiet on a first-ever publish (404 manifest
           file.path(dir, "brand_new_stat.rds"))
   testthat::local_mocked_bindings(
     pb_download = function(...) stop("404 Not Found"),
-    pb_upload = function(file, repo, tag, name = basename(file), ...) invisible(NULL),
     .package = "piggyback"
+  )
+  testthat::local_mocked_bindings(
+    .publish_asset = function(file, repo, tag, name = basename(file), ...) invisible(NULL)
   )
   testthat::local_mocked_bindings(update_models_manifest = function(...) invisible(NULL))
 
@@ -310,11 +318,13 @@ test_that("manifest write moves prior entry to history and records sha256", {
       jsonlite::write_json(existing_manifest, file.path(dest, file), auto_unbox = TRUE, null = "null")
       invisible(NULL)
     },
-    pb_upload = function(file, repo, tag, name = basename(file), ...) {
+    .package = "piggyback"
+  )
+  testthat::local_mocked_bindings(
+    .publish_asset = function(file, repo, tag, name = basename(file), ...) {
       uploaded_paths <<- c(uploaded_paths, file)
       invisible(NULL)
-    },
-    .package = "piggyback"
+    }
   )
 
   manifest <- update_models_manifest("wp_model.rds", dir, "peteowen1/torpmodels", "core-models")
@@ -325,4 +335,22 @@ test_that("manifest write moves prior entry to history and records sha256", {
   expect_identical(entry$model, "wp")
   expect_length(entry$history, 1)
   expect_identical(entry$history[[1]]$sha256, "deadbeef")
+})
+
+test_that("model and manifest uploads go through .vb_safe_upload(), never a delete-first pb_upload()", {
+  # CLOBBER-AUDIT-2026-10-08 MED row: pb_upload()'s default overwrite deletes the
+  # published model before uploading. Every publish path must use the swap.
+  dir <- withr::local_tempdir()
+  saveRDS(1, file.path(dir, "wp_model.rds")); saveRDS(list(a = 0, b = 1), file.path(dir, "wp_calibration.rds"))
+  safe <- character(0)
+  testthat::local_mocked_bindings(
+    .vb_safe_upload = function(path, repo, tag, name = basename(path), ...) { safe <<- c(safe, name); invisible(1) }
+  )
+  testthat::local_mocked_bindings(
+    pb_upload = function(...) stop("delete-first pb_upload() must not be called directly"),
+    pb_download = function(...) stop("404 Not Found"),
+    .package = "piggyback"
+  )
+  publish_model_group("wp", dir)
+  expect_setequal(safe, c("wp_model.rds", "wp_calibration.rds", "models_manifest.json"))
 })
