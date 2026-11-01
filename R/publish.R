@@ -6,6 +6,16 @@
 # silent overwrite (like June's wp_model.rds) becomes detectable by
 # inspection via check_manifest_sync().
 
+# Every model and manifest upload goes through here. piggyback::pb_upload()'s
+# default overwrite DELETES the published asset first whenever the local file is
+# newer, so a failed upload used to leave the release without the model
+# (vault plans/CLOBBER-AUDIT-2026-10-08.md, MED row "models with no retry").
+# .vb_safe_upload() (versebus 1.2.0) uploads under a temp name, confirms it,
+# then swaps, so a failure leaves the previous model in place. Tests mock this.
+.publish_asset <- function(path, repo, tag, name = basename(path)) {
+  .vb_safe_upload(path, repo = repo, tag = tag, name = name)
+}
+
 #' @noRd
 .MODEL_GROUPS <- list(
   ep    = "ep_model.rds",
@@ -46,7 +56,8 @@ publish_model_group <- function(group, dir, repo = get_torpmodels_repo(),
     ))
   }
 
-  Sys.setenv(piggyback_cache_duration = 1)
+  restore_cache <- .vb_with_fresh_listing()
+  on.exit(restore_cache(), add = TRUE)
 
   uploaded <- character(0)
   upload_error <- NULL
@@ -54,7 +65,7 @@ publish_model_group <- function(group, dir, repo = get_torpmodels_repo(),
   for (f in files) {
     path <- file.path(dir, f)
     ok <- tryCatch({
-      piggyback::pb_upload(path, repo = repo, tag = tag)
+      .publish_asset(path, repo = repo, tag = tag)
       TRUE
     }, error = function(e) {
       upload_error <<- conditionMessage(e)
@@ -214,7 +225,8 @@ publish_stat_models <- function(files, dir, repo = get_torpmodels_repo(),
     }
   }
 
-  Sys.setenv(piggyback_cache_duration = 1)
+  restore_cache <- .vb_with_fresh_listing()
+  on.exit(restore_cache(), add = TRUE)
 
   uploaded <- character(0)
   failed <- character(0)
@@ -222,7 +234,7 @@ publish_stat_models <- function(files, dir, repo = get_torpmodels_repo(),
   for (f in files) {
     path <- file.path(dir, f)
     ok <- tryCatch({
-      piggyback::pb_upload(path, repo = repo, tag = tag)
+      .publish_asset(path, repo = repo, tag = tag)
       TRUE
     }, error = function(e) {
       cli::cli_warn("publish_stat_models: upload failed for {.val {f}}: {conditionMessage(e)}")
@@ -348,7 +360,9 @@ update_models_manifest <- function(files, dir, repo, tag) {
 
   tmp <- tempfile(fileext = ".json")
   jsonlite::write_json(manifest, tmp, auto_unbox = TRUE, pretty = TRUE, null = "null", na = "null")
-  piggyback::pb_upload(tmp, repo = repo, tag = tag, name = .manifest_asset_name)
+  restore_cache <- .vb_with_fresh_listing()
+  on.exit(restore_cache(), add = TRUE)
+  .publish_asset(tmp, repo = repo, tag = tag, name = .manifest_asset_name)
 
   invisible(manifest)
 }
