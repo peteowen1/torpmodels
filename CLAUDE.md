@@ -53,6 +53,8 @@ One script per live JSON artifact now (the superseded `train_ep_model_live.R` v1
 
 **`data-raw/debug/`** holds scratch/experimental WP-comparison and calibration scripts — not part of the pipeline; ignore when tracing the training flow.
 
+**Archived match-model experiments (deleted 2026-11-17, torpverse review W11):** the `ws*.R` workstream scripts and everything in `data-raw/04-match-model/experiments/` except `rolling_lib.R` (sourced by `train_match_models.R`), `arm_lib.R`, `scorecard_lib.R`, `signal_gate.R` and `results/ws1_beta_drift.csv` (read by torp's explainer). They are kept at the git tag `archive-2026-11`: `git show archive-2026-11:<path>` reads one, `git checkout archive-2026-11 -- <path>` restores one.
+
 **Training order matters:** EP must be trained before WP (WP uses EP predictions as features) — `train_core_models()` enforces this automatically.
 
 ### Live Model Export
