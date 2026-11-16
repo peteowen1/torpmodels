@@ -1,4 +1,4 @@
-# Train Live EP Model v2 (13 features)
+# Train Live EP Model v2 (14 features)
 # ====================================
 # Compared to v1 (8 features):
 #   KEEP:   goal_x, y, period_seconds, est_qtr_remaining, est_match_remaining, shot_row
@@ -9,7 +9,7 @@
 #           phase_of_play_loose_ball, phase_of_play_set_shot (full categorical)
 #           chain_action_num (position within chain — new feature)
 #
-# Total: 13 features (6 numeric + 3 play_type + 4 phase_of_play)
+# Total: 14 features (6 kept numeric + chain_action_num + 3 play_type + 4 phase_of_play)
 
 library(xgboost)
 library(data.table)

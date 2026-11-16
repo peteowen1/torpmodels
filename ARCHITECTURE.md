@@ -129,7 +129,7 @@ graph LR
 | Stage | Directory | Script | Data Source |
 |-------|-----------|--------|-------------|
 | EP / WP / shot models | `data-raw/` | `train_models.R` (CLI) → `lib/train_lib.R` (`fit_ep`/`fit_wp`/`fit_shot`) | `torp::load_chains()` + `torp:::clean_model_data_epv()`; shot uses `torp::load_pbp()` |
-| Live EP model | `data-raw/01-ep-model/` | `train_ep_model_live_v2.R` | Same PBP data, 13-feature subset → JSON for Worker |
+| Live EP model | `data-raw/01-ep-model/` | `train_ep_model_live_v2.R` | Same PBP data, 14-feature subset → JSON for Worker |
 | Match models | `data-raw/04-match-model/` | `train_match_models.R` (eval only) + `torp::run_predictions_pipeline()` (sole publisher) | `torp::build_team_mdl_df()` |
 | Live WP model | `data-raw/05-live-wp-model/` | `train_live_wp_chain_v4.R` / `train_live_wp_model.R` | PBP data → GAM lookup JSON for browser |
 
