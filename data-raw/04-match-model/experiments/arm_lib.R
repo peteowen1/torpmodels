@@ -47,9 +47,13 @@ load_match_inputs <- function() {
 #' rating-independent inputs arrive pre-loaded instead of being re-fetched.
 #' @param src Output of load_match_inputs()
 #' @param torp_df The rating frame for this arm
-build_team_mdl_with <- function(src, torp_df) {
-  team_rt_df <- .build_team_ratings_df(src$teams, torp_df, src$psr_df)
-  team_rt_fix_df <- .build_match_features(src$fix_df, team_rt_df, src$all_grounds)
+#' @param xrapm_df Optional as-of xRAPM snapshot (`load_team_rapm_asof()`);
+#'   with `include_xrapm = TRUE` it reaches the model frame as a real
+#'   `xrapm_diff` (production builds it as a constant 0).
+build_team_mdl_with <- function(src, torp_df, xrapm_df = NULL, include_xrapm = FALSE) {
+  team_rt_df <- .build_team_ratings_df(src$teams, torp_df, src$psr_df, xrapm_df)
+  team_rt_fix_df <- .build_match_features(src$fix_df, team_rt_df, src$all_grounds,
+                                          include_xrapm = include_xrapm)
   .build_team_mdl_df(team_rt_fix_df, src$results, src$xg_df, src$weather_df, src$anchor)
 }
 
