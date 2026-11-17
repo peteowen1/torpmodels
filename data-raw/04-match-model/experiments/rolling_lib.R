@@ -447,8 +447,20 @@ run_rolling_eval <- function(team_mdl_df,
       gam_trainer = deparse(gam_trainer), xgb_trainer = deparse(xgb_trainer),
       cv_trainer = if (is.null(cv_trainer)) NULL else deparse(cv_trainer),
       extra_feature_cols = extra_feature_cols, cv_extra_feature_cols = cv_extra_feature_cols,
-      nthreads = nthreads), algo = "sha256")
+      nthreads = nthreads,
+      # The trainers call torp internals (.train_match_gams, .train_match_xgb,
+      # ...), which deparse() of the trainers cannot see: hash every torp
+      # function body, so editing torp between a stop and a resume aborts.
+      torp_code = local({
+        ns <- asNamespace("torp")
+        nms <- sort(ls(ns, all.names = TRUE))
+        lapply(nms, function(n) { f <- get(n, envir = ns); if (is.function(f)) deparse(f) })
+      })), algo = "sha256")
     meta_path <- file.path(checkpoint_dir, "meta.rds")
+    if (!file.exists(meta_path) && length(list.files(checkpoint_dir, pattern = "^round_.*\\.rds$"))) {
+      cli::cli_abort(c("{.path {checkpoint_dir}} has round files but no {.file meta.rds}, so they cannot be checked against this setup.",
+                       "i" = "Use a new folder, or delete that one."))
+    }
     if (file.exists(meta_path)) {
       ckpt_meta <- readRDS(meta_path)
       if (!identical(ckpt_meta$fingerprint, fingerprint)) {
