@@ -413,6 +413,16 @@
 #'   purposes) so opting into the fix is explicit per-call.
 #' @param nthreads Threads passed to gam_trainer (default 4L)
 #' @param verbose Print progress via cli (default TRUE)
+#' @param checkpoint_dir Optional folder. When set, each round's three
+#'   prediction sets are written there as soon as the round is scored, and the
+#'   CV-chosen XGBoost nrounds are saved once. A rerun with the same folder
+#'   loads the rounds already on disk instead of retraining them, so a run
+#'   stopped at round 50 of 59 resumes at 51 (one arm takes 35-46 minutes and
+#'   used to write nothing until the end). A fingerprint of the inputs (the
+#'   data, test seasons, trainer code, feature columns, nthreads) is stored
+#'   with the checkpoint; a folder made by a different setup aborts rather than
+#'   mixing rounds from two experiments. Use one folder per arm. NULL (default)
+#'   keeps the old in-memory behaviour.
 #' @return list(gam_preds, xgb_preds, blend_preds, input_blend_preds,
 #'   xgb_nrounds, test_rounds)
 #' @keywords internal
@@ -424,8 +434,34 @@ run_rolling_eval <- function(team_mdl_df,
                               cv_extra_feature_cols = NULL,
                               cv_trainer = NULL,
                               nthreads = 4L,
-                              verbose = TRUE) {
+                              verbose = TRUE,
+                              checkpoint_dir = NULL) {
   stopifnot(is.function(gam_trainer), is.function(xgb_trainer))
+
+  # Checkpoint folder: fingerprint the inputs, reuse nrounds on resume ----
+  ckpt_meta <- NULL
+  if (!is.null(checkpoint_dir)) {
+    dir.create(checkpoint_dir, recursive = TRUE, showWarnings = FALSE)
+    fingerprint <- digest::digest(list(
+      data = team_mdl_df, test_seasons = sort(as.integer(test_seasons)),
+      gam_trainer = deparse(gam_trainer), xgb_trainer = deparse(xgb_trainer),
+      cv_trainer = if (is.null(cv_trainer)) NULL else deparse(cv_trainer),
+      extra_feature_cols = extra_feature_cols, cv_extra_feature_cols = cv_extra_feature_cols,
+      nthreads = nthreads), algo = "sha256")
+    meta_path <- file.path(checkpoint_dir, "meta.rds")
+    if (file.exists(meta_path)) {
+      ckpt_meta <- readRDS(meta_path)
+      if (!identical(ckpt_meta$fingerprint, fingerprint)) {
+        cli::cli_abort(c("{.path {checkpoint_dir}} holds a checkpoint from a different setup (data, seasons, trainers or features differ).",
+                         "i" = "Use a new folder for this run, or delete that one if it is no longer needed."))
+      }
+    }
+  }
+  .ckpt_save <- function(obj, path) {   # write-then-rename, so a kill mid-write leaves no half file
+    tmp <- paste0(path, ".tmp")
+    saveRDS(obj, tmp)
+    if (!file.rename(tmp, path)) cli::cli_abort("Could not write checkpoint {.path {path}}")
+  }
 
   # Pre-optimise XGBoost nrounds via CV on pre-test-season data only (G6) ----
   # Using the full dataset (including test_seasons) would leak: best_n would
@@ -447,14 +483,23 @@ run_rolling_eval <- function(team_mdl_df,
   # their own pinned copy here rather than depend on today's live production
   # behaviour. NULL (default) preserves every existing caller's behaviour
   # unchanged (falls through to cv_extra_feature_cols / .train_match_xgb()).
-  xgb_cv_result <- if (!is.null(cv_trainer)) {
-    cv_trainer(cv_train_df)
-  } else if (!is.null(cv_extra_feature_cols)) {
-    .train_match_xgb_ext(cv_train_df, extra_feature_cols = cv_extra_feature_cols)
+  if (!is.null(ckpt_meta)) {
+    # Resuming: the rounds already scored used these nrounds, so the rest must too.
+    xgb_nrounds <- ckpt_meta$xgb_nrounds
+    if (verbose) cli::cli_inform("Resuming from {.path {checkpoint_dir}}: reusing its XGBoost nrounds (CV skipped)")
   } else {
-    .train_match_xgb(cv_train_df)
+    xgb_cv_result <- if (!is.null(cv_trainer)) {
+      cv_trainer(cv_train_df)
+    } else if (!is.null(cv_extra_feature_cols)) {
+      .train_match_xgb_ext(cv_train_df, extra_feature_cols = cv_extra_feature_cols)
+    } else {
+      .train_match_xgb(cv_train_df)
+    }
+    xgb_nrounds <- vapply(xgb_cv_result$steps, function(s) s$best_n, integer(1))
+    if (!is.null(checkpoint_dir)) {
+      .ckpt_save(list(fingerprint = fingerprint, xgb_nrounds = xgb_nrounds, created = Sys.time()), meta_path)
+    }
   }
-  xgb_nrounds <- vapply(xgb_cv_result$steps, function(s) s$best_n, integer(1))
   if (verbose) {
     cli::cli_inform("XGBoost nrounds: {paste(names(xgb_nrounds), xgb_nrounds, sep='=', collapse=', ')}")
   }
@@ -476,6 +521,7 @@ run_rolling_eval <- function(team_mdl_df,
   all_gam_preds <- list()
   all_xgb_preds <- list()
   all_input_blend_preds <- list()
+  n_resumed <- 0L
 
   for (i in seq_len(n_test_rounds)) {
     s <- test_rounds$season[i]
@@ -493,6 +539,16 @@ run_rolling_eval <- function(team_mdl_df,
     n_test <- sum(test_mask) / 2
 
     if (n_test == 0) next
+
+    round_path <- if (!is.null(checkpoint_dir)) file.path(checkpoint_dir, sprintf("round_%d_%02d.rds", s, r))
+    if (!is.null(round_path) && file.exists(round_path)) {
+      saved <- readRDS(round_path)
+      all_gam_preds[[i]] <- saved$gam
+      all_xgb_preds[[i]] <- saved$xgb
+      all_input_blend_preds[[i]] <- saved$input_blend
+      n_resumed <- n_resumed + 1L
+      next
+    }
 
     if (verbose) cli::cli_progress_step("{s} R{r}: train={n_train}, test={n_test}")
 
@@ -527,8 +583,15 @@ run_rolling_eval <- function(team_mdl_df,
       gam_result$models$win, newdata = ib_data, type = "response"
     )
     all_input_blend_preds[[i]] <- .format_match_preds(ib_data[test_mask, ])
+    if (!is.null(round_path)) {
+      .ckpt_save(list(gam = all_gam_preds[[i]], xgb = all_xgb_preds[[i]],
+                      input_blend = all_input_blend_preds[[i]]), round_path)
+    }
   }
 
+  if (verbose && n_resumed > 0L) {
+    cli::cli_inform("{n_resumed} of {n_test_rounds} round{?s} loaded from {.path {checkpoint_dir}} instead of retrained")
+  }
   if (verbose) cli::cli_alert_success("Rolling evaluation complete")
 
   # Combine all out-of-sample predictions ----

@@ -62,8 +62,15 @@ build_team_mdl_with <- function(src, torp_df) {
 #' parallel = TRUE against a champion scored sequentially -- the divergence is
 #' structural (tree_method = "hist"), ~0.1-0.25 MAE, and sized like a real
 #' effect. Re-confirm any winner sequentially before shipping.
+#' `checkpoint_dir` (sequential path only): each arm checkpoints its rounds to
+#' `<checkpoint_dir>/<arm name>/`, so a stopped comparison resumes where it was
+#' instead of losing every arm in flight (see run_rolling_eval()).
 score_arms <- function(arms, test_seasons, extra_feature_cols = "xelo_diff",
-                       parallel = FALSE, n_workers = NULL, verbose = FALSE) {
+                       parallel = FALSE, n_workers = NULL, verbose = FALSE,
+                       checkpoint_dir = NULL) {
+  if (isTRUE(parallel) && !is.null(checkpoint_dir)) {
+    cli::cli_abort("checkpoint_dir works on the sequential path only (run_rolling_eval_parallel() does not checkpoint).")
+  }
   out <- list()
   for (nm in names(arms)) {
     cli::cli_h2("scoring arm: {nm}")
@@ -77,7 +84,8 @@ score_arms <- function(arms, test_seasons, extra_feature_cols = "xelo_diff",
       run_rolling_eval(arms[[nm]], test_seasons = test_seasons,
                        extra_feature_cols = extra_feature_cols,
                        cv_extra_feature_cols = extra_feature_cols,
-                       verbose = verbose)
+                       verbose = verbose,
+                       checkpoint_dir = if (!is.null(checkpoint_dir)) file.path(checkpoint_dir, nm))
     }
     cli::cli_inform("{nm}: {round(difftime(Sys.time(), t0, units='mins'), 2)} min")
   }
