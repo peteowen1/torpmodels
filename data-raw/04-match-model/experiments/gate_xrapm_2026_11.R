@@ -30,10 +30,21 @@ out_dir <- "C:/dev/torpverse/torpdata/data/raw/match_gates/xrapm_2026-11"
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 TEST_SEASONS <- 2025:2026
 
-say("loading inputs")
+# Releases only: a local torpdata/data copy, or a cwd-relative
+# data-raw/03-ratings xRAPM snapshot, silently shadows the release (the first
+# launch, 2026-11-17 9:32pm, read a 2026-08-25 local snapshot with no season
+# keys and stopped).
+options(torp.local_data_dir = NA)
+stopifnot(is.null(get_local_data_dir()))
+say("loading inputs (releases only)")
 src <- load_match_inputs()
 torp_df <- load_torp_ratings()
-xr <- load_team_rapm_asof(comp = "AFLM")
+xr_path <- file.path(tempdir(), "career_team_rapm_asof_AFLM.parquet")
+piggyback::pb_download("career_team_rapm_asof_AFLM.parquet", dest = tempdir(),
+                       repo = "peteowen1/torpdata", tag = TEAM_RAPM_ASOF_RELEASE_TAG, overwrite = TRUE)
+stopifnot(file.exists(xr_path))
+xr <- load_team_rapm_asof(comp = "AFLM", path = xr_path)
+stopifnot(!is.null(xr), nrow(xr) > 0)
 say("torp ratings", nrow(torp_df), "rows | xRAPM snapshot", nrow(xr), "rows")
 
 tm_on  <- build_team_mdl_with(src, torp_df, xrapm_df = xr, include_xrapm = TRUE)
