@@ -9,13 +9,23 @@ download_model_from_release(file_name, release_tag, local_path, verbose = TRUE)
 \description{
 Verifies sha256 against \code{models_manifest.json} when the tag's manifest
 tracks this file -- replacing the old \code{file.size > 1000} heuristic, which
-is now only a last-resort fallback for tags with no manifest yet (e.g.
-stat-models, as of this writing). Each download attempt lands in a
+is now only a last-resort fallback for tags with no manifest yet (any
+asset published outside \code{publish_model_group()}/\code{publish_stat_models()}
+-- stat-models had none until 2026-07-26). Each download attempt lands in a
 tempdir beside the destination and is moved into place atomically via
 \code{vb_atomic_write()}, with a \verb{<local_path>.sha256} sidecar written
-alongside on success. A failed integrity check deletes the temp and
-retries the SAME method once before falling through to the next method
-(piggyback, then a direct release URL); a pre-existing \code{local_path} is
-never touched by a failed download.
+alongside on success. Three retry layers, innermost first: (1) the raw
+fetch call itself (\code{piggyback::pb_download()} / \code{download.file()}) is
+wrapped in \code{.vb_retry()}, which retries up to 3 attempts total with 2s
+then 5s backoff on transient errors -- this is the fix for
+torpdata#66/#68, where GitHub's release-asset CDN throws sporadic 5xx
+errors that clear on their own within a few seconds; a confirmed-absent
+(404) error is excluded via \code{vb_classify_error()} and re-raised
+immediately, never retried. (2) A failed integrity check (corrupt/short
+download that DID complete a fetch) deletes the temp and retries the
+whole attempt (including its own inner \code{.vb_retry()}) once more for the
+SAME method. (3) If piggyback still fails after both layers, falls
+through to a direct release URL. A pre-existing \code{local_path} is never
+touched by a failed download.
 }
 \keyword{internal}
