@@ -57,6 +57,7 @@
 #'
 #' @return A named list with the required provenance fields.
 #' @keywords internal
+#' @export
 build_model_meta <- function(model_name, seasons, params, feature_names,
                              cv_metric = NA_real_, n_rows = NA_integer_,
                              n_matches = NA_integer_, extra = list()) {
@@ -115,6 +116,7 @@ build_model_meta <- function(model_name, seasons, params, feature_names,
 #' @param meta A metadata list, typically from [build_model_meta()].
 #' @return `object` with a `torp_meta` attribute set.
 #' @keywords internal
+#' @export
 stamp_model_meta <- function(object, meta) {
   attr(object, "torp_meta") <- meta
   object
