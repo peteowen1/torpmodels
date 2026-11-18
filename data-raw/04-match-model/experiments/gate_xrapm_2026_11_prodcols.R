@@ -17,8 +17,8 @@
 # window (NEXT-STEPS, decided 2026-11-12). Sequential path only (the parallel
 # one is not ship-gate safe). Each arm checkpoints per round.
 #
-# Run from torpverse/torp:  Rscript ../torpmodels/data-raw/04-match-model/experiments/gate_xrapm_2026_11.R
-# Output: torpdata/data/raw/match_gates/xrapm_2026-11/ (gitignored): checkpoints,
+# Run from torpverse/torp:  Rscript ../torpmodels/data-raw/04-match-model/experiments/gate_xrapm_2026_11_prodcols.R
+# Output: torpdata/data/raw/match_gates/xrapm_2026-11-prodcols/ (gitignored): checkpoints,
 #         results.rds, metrics.csv, gate.log lines on stdout.
 
 t0 <- Sys.time()
