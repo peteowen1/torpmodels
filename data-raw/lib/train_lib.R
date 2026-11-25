@@ -996,7 +996,41 @@ fit_shot <- function(seasons = default_training_seasons()) {
     drop.unused.levels = FALSE
   )
 
+  # bam(discrete = TRUE) keeps formulas in dinfo$gp (pf, fake.formula,
+  # pred.formula) whose environment is THIS frame, so saveRDS() wrote the whole
+  # training pbp with the model: 473,840,161 bytes. Repointed at the global
+  # environment it is 19,690,766, and predictions on 2026's 11,763 shots are
+  # identical() (review W14, 2026-11-25).
+  shot_ocat_mdl <- reset_formula_envs(shot_ocat_mdl)
+
   list(model = shot_ocat_mdl, shot_player_df = shot_player_df)
+}
+
+#' Repoint every formula / terms environment inside a fitted model
+#'
+#' A formula built inside a function carries that function's frame; saving the
+#' model then serializes every object in the frame (for the shot model, the
+#' full training play-by-play). Predictions need none of it: the variables come
+#' from `newdata`. Namespaces and `env` itself are left alone.
+#'
+#' @param x A fitted model (or any list / formula).
+#' @param env Environment to point at. Default the global environment.
+#' @return `x` with its attributes (class, `torp_meta`) unchanged.
+#' @keywords internal
+reset_formula_envs <- function(x, env = globalenv()) {
+  if (inherits(x, "formula") || inherits(x, "terms")) {
+    e <- environment(x)
+    if (!is.null(e) && !identical(e, env) && !isNamespace(e)) environment(x) <- env
+    return(x)
+  }
+  if (is.list(x) && !is.data.frame(x)) {
+    a <- attributes(x)
+    for (i in seq_along(x)) if (!is.null(x[[i]])) x[[i]] <- reset_formula_envs(x[[i]], env)
+    attributes(x) <- a
+  }
+  # a model frame (lm/gam `$model`) carries its formula as a "terms" attribute
+  if (!is.null(attr(x, "terms"))) attr(x, "terms") <- reset_formula_envs(attr(x, "terms"), env)
+  x
 }
 
 #' Train (and optionally publish) EP/WP/shot models through one canonical path

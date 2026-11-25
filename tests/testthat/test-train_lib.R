@@ -1043,3 +1043,22 @@ test_that("END-TO-END Path B: global can't fix q4close without overcorrecting al
   # leverage form has no cell-boundary jump by construction (continuous weight)
   expect_equal(saved$max_boundary_jump, 0)
 })
+
+test_that("reset_formula_envs drops a fit-time frame from saved formulas and keeps predictions", {
+  fit_in_frame <- function() {
+    big <- runif(2e5)                       # stands in for the training pbp
+    d <- data.frame(x = runif(200), z = factor(sample(letters[1:3], 200, TRUE)))
+    d$y <- 2 * d$x + rnorm(200)
+    m <- lm(y ~ x + z, data = d)
+    attr(m, "torp_meta") <- list(model = "test")
+    m
+  }
+  m <- fit_in_frame()
+  m2 <- env$reset_formula_envs(m)
+  expect_lt(length(serialize(m2, NULL)), length(serialize(m, NULL)) / 5)
+  expect_identical(environment(m2$terms), globalenv())
+  expect_identical(attr(m2, "torp_meta"), attr(m, "torp_meta"))
+  expect_identical(class(m2), class(m))
+  nd <- data.frame(x = c(0.1, 0.9), z = factor(c("a", "c"), levels = letters[1:3]))
+  expect_identical(predict(m2, nd), predict(m, nd))
+})
