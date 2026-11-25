@@ -745,7 +745,7 @@ run_rolling_eval <- function(team_mdl_df,
     )
   }
   rbind(
-    score("Constant (0 pts, 50%)", rep(0, nrow(p)), rep(0.5, nrow(p))),
+    score("Constant (0 pts, 50%; accuracy = away-win floor)", rep(0, nrow(p)), rep(0.5, nrow(p))),
     score("Home only (as-of mean)", p$home_margin, p$home_rate)
   )
 }
