@@ -693,6 +693,63 @@ run_rolling_eval <- function(team_mdl_df,
   )
 }
 
+# .naive_baselines ----
+
+#' Naive no-model baselines scored on the same out-of-sample matches
+#'
+#' Two reference rows for the rolling comparison (validation-design audit
+#' 2026-08-27: "no naive baseline is reported"):
+#' - `Constant`: margin 0, win probability 0.5 for every match.
+#' - `Home only`: margin = mean home margin and win probability = home win
+#'   rate over every completed match the model itself could train on for that
+#'   round (`season < s`, or `season == s` and `round < r`, the same as-of
+#'   filter run_rolling_eval() uses), so it never sees the match it predicts.
+#'
+#' Scored directly rather than via .compute_metrics(): a constant prediction
+#' has no slope or correlation. Accuracy for `Constant` is the share of away
+#' wins (R rounds 0.5 to 0), so read it as a floor, not a model.
+#'
+#' @param team_mdl_df The same frame passed to run_rolling_eval().
+#' @param preds One-row-per-match OOS predictions (season, round, margin,
+#'   home_win), e.g. `roll$input_blend_preds`.
+#' @return data.frame: Model, N, LogLoss, Accuracy, Brier, MAE, RMSE.
+#' @keywords internal
+.naive_baselines <- function(team_mdl_df, preds) {
+  stopifnot(nrow(preds) > 0, all(c("season", "round", "margin", "home_win") %in% names(preds)))
+  hist <- team_mdl_df[team_mdl_df$team_type_fac.x == "home" & !is.na(team_mdl_df$win) &
+                        !is.na(team_mdl_df$score_diff), c("season.x", "round_number.x", "score_diff")]
+  keys <- unique(preds[, c("season", "round")])
+  keys$home_margin <- NA_real_
+  keys$home_rate   <- NA_real_
+  for (k in seq_len(nrow(keys))) {
+    s <- keys$season[k]; r <- keys$round[k]
+    past <- hist$score_diff[hist$season.x < s | (hist$season.x == s & hist$round_number.x < r)]
+    if (length(past) == 0) stop(".naive_baselines: no completed matches before season ", s, " round ", r)
+    keys$home_margin[k] <- mean(past)
+    keys$home_rate[k]   <- mean(ifelse(past > 0, 1, ifelse(past == 0, 0.5, 0)))
+  }
+  p <- merge(as.data.frame(preds)[, c("season", "round", "margin", "home_win")], keys,
+             by = c("season", "round"), sort = FALSE)
+  stopifnot(nrow(p) == nrow(preds), !anyNA(p$home_margin))
+
+  score <- function(label, pm, pw) {
+    data.frame(
+      Model    = label,
+      N        = nrow(p),
+      LogLoss  = round(MLmetrics::LogLoss(pw, p$home_win), 4),
+      Accuracy = round(mean(round(pw) == p$home_win) * 100, 1),
+      Brier    = round(mean((pw - p$home_win)^2), 4),
+      MAE      = round(mean(abs(pm - p$margin)), 1),
+      RMSE     = round(sqrt(mean((pm - p$margin)^2)), 1),
+      stringsAsFactors = FALSE
+    )
+  }
+  rbind(
+    score("Constant (0 pts, 50%; accuracy = away-win floor)", rep(0, nrow(p)), rep(0.5, nrow(p))),
+    score("Home only (as-of mean)", p$home_margin, p$home_rate)
+  )
+}
+
 # margin_calibration_by_pred_bucket ----
 
 #' Margin calibration by predicted-margin bucket

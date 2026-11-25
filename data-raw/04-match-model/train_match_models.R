@@ -105,6 +105,11 @@ comparison <- data.frame(
 cat("\n=== TORP Rolling OOS Comparison ===\n")
 print(comparison, row.names = FALSE)
 
+# Naive baselines on the same matches: what a model has to beat to be worth
+# anything (MAE in points, LogLoss/Brier: lower is better).
+cat("\n=== Naive baselines, same matches (lower MAE / LogLoss / Brier is better) ===\n")
+print(.naive_baselines(team_mdl_df, input_blend_preds), row.names = FALSE)
+
 # Per-season breakdown ----
 .season_metrics <- function(preds, label) {
   preds |>
