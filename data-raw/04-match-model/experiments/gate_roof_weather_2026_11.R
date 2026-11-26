@@ -2,6 +2,8 @@
 # RESULT: measured null (log loss and margin MAE both worse with the flag on), so
 # the flag was REMOVED from torp (6342210c). Kept as the record; it no longer runs
 # against current torp. Results: torpdata/data/raw/match_gates/roof_weather_2026-11/.
+# Its "Total points" block below scores against UNSCALED total_xpoints (wrong
+# scale); the right numbers are in gate_roof_weather_2026_11_totals.R.
 # Question: does zeroing the rain and wind model features under a closed roof
 # (torp MATCH_ROOF_ZERO_WEATHER) improve the match model?
 #
