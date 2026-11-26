@@ -1,4 +1,7 @@
 # Roofed-games rolling gate (review W12, 2026-11-26).
+# RESULT: measured null (log loss and margin MAE both worse with the flag on), so
+# the flag was REMOVED from torp (6342210c). Kept as the record; it no longer runs
+# against current torp. Results: torpdata/data/raw/match_gates/roof_weather_2026-11/.
 # Question: does zeroing the rain and wind model features under a closed roof
 # (torp MATCH_ROOF_ZERO_WEATHER) improve the match model?
 #
